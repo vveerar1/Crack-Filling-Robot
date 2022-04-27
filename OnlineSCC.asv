@@ -1,0 +1,2084 @@
+%% Online SCC planning with unknown target information
+% Author: Vishnu Veeraraghavan,
+% Automated Control Systems and Robotics Lab.
+% Email: vveerar1@binghamton.edu.
+% July 2019, Last Revision: 25-Sep-2019
+
+% Revisions
+% 1. Changed size of the unknown area 15:30, 30-July-2019
+% 2. Changed function to calculate angle b/w 2 vector  13:25, 06-August-2019
+% 3. Changed the convering loop with square poly. 12:54, 15-August-2019
+% 4. Created a new MCD function 
+% 5. Cleaned and Simplified the whole program, the running time is extremely improved
+
+%% Initial Setup 
+
+clc
+close all
+clearvars -except obj_den k
+
+ress=[];
+for sa=1
+clearvars -except sa ress 
+
+global reebEdge reebCell crackEdge allNode vertical spdist spdist2 s a sMask sRan total_length
+
+inpxMap = @(x) fix(((x)*25.4)/2);
+pxinMap = @(x) round((x)*2/25.4,1);
+mmpxMap = @(x) fix(((x)/2));
+pxmmMap = @(x) round((x)*2,1);
+
+sim =false;
+worki=false;
+plt=true;plti=0;
+
+warning off
+
+botD = 36;                                       % 36" Diameter
+footD= 7;                                        % 7" Diameter
+sensD= 4.5*12;                                   % 3*12" Diameter  
+
+r1=inpxMap(botD/2);                      % Robot Radius 
+a=inpxMap(footD/2);                      
+s=inpxMap(sensD/2);
+dir_map=[-1 -1;-1 0; -1 1; 0 -1; 0 1; 1 -1; 1 0 ; 1 1];
+
+sMask = @(BW,rr,cp) deal(BW(bound(round(cp(2)-(rr)),1,size(BW,1)):bound(round(cp(2)+(rr)),1,size(BW,1)),...
+    bound(round(cp(1)-(rr)),1,size(BW,2)):bound(round(cp(1)+(rr)),1,size(BW,2))),[bound(round(cp(2)-(rr)-1),0,size(BW,1)),bound(round(cp(1)-(rr)-1),0,size(BW,2))]);
+
+sMaskid = @(BW,rr,cp) deal([bound(round(cp(2)-(rr)),1,size(BW,1)):bound(round(cp(2)+(rr)),1,size(BW,1))],...
+    [bound(round(cp(1)-(rr)),1,size(BW,2)):bound(round(cp(1)+(rr)),1,size(BW,2))]);
+
+sRan = @(t,rr,cp) bound(round(cp-(rr)),1,t):bound(round(cp+(rr)),1,t);
+
+crackGen = 0;numItr=0; ppn=0;
+
+%%% Importing Map
+
+% Uniform Distribution
+den = [35,45,50,65,80,90,95,100];Gau=0;dd=8 ;
+img_n=['myCrack' num2str(dd) '_' num2str(den(dd)) '_1'] ;
+BW = imread(['Crack Maps/Uniform/' img_n '.png']);      % Importing the map w/ crack information imread([img_n '.png']);%
+
+% % % Gaussian Distribution
+% den = [35,45,50,65,80,90,95,100];sig=[5,10,100];Gau=1;bb=3;dd=8;%k=8 ;
+% Gaussb ='7'; sig_n = num2str(sig(bb)); den_n = num2str(den(dd));
+% img_n=['myCrackGauss_s' sig_n '_' den_n];
+% load(['Crack Maps/Gaussian' Gaussb '/' img_n '.mat'])
+% crackGen(end,end)=0;
+
+%%%
+
+sm_flag=1; %Polygon Smoothing flag
+
+if crackGen==0                     %ischar(img_n)
+    BW = imbinarize(BW);           % Converting the image into a binary image
+    BW = BW(:,:,1);
+
+    BW = bwareaopen(BW, 50);       % Removes all objects that have fewer than 50 pixels from the binary image BW
+    BW = padarray(~BW,[1 1]);      % Adds a boundary around the map
+
+    IM2 = imcomplement(BW);        % Computes the complement of the image BW
+
+else
+    BW = crackGen;  
+end
+
+%%%
+
+BW2=bwmorph(BW,'fill');             % New Fills 1 pixel islands
+BW2 = bwskel(BW2>0);                % Skeliton function removes the diagonal pixel 
+BW3 = bwmorph(BW2, 'spur', 10);     % Removes spur pixels
+BW_working = BW3;
+
+crackGen = zeros(size(BW_working));
+crackGGen = zeros(size(BW_working));
+[mBW,nBW,vBW]=find(sparse(BW_working));
+
+if worki
+    fig1=figure; imshow(~crackGen);
+    pos=get(gcf, 'Position');hold on;set(gcf, 'Position',[-1130,315,1185,1049+50])
+end
+
+if plt
+    figure, imshow(~crackGen)
+    pos=get(gcf, 'Position');hold on
+end
+%%%
+
+[rowBW, colBW]= size(BW3);
+tol =0.00001;
+colors={'y','m','c','r','g','b'};
+
+if worki
+    set(gca,'FontSize',20,'FontWeight','bold');
+    xlabel('x (m)');ylabel('y (m)')
+    axis([0-150 colBW+150 0-150 rowBW+150])
+    axis on
+    pbaspect([1 1 1])
+    xlab=get(gca,'xtickLabel');ylab=get(gca,'ytickLabel');
+
+    xlab={};for ppx=round(pxmmMap(linspace(0,3050,7)/1000));xlab=[xlab,num2str(ppx)];end
+    ylab={};for ppx=round(pxmmMap(linspace(0,2898,7)/1000));ylab=[ylab,num2str(ppx)];end
+    xticks(mmpxMap(round(pxmmMap(linspace(0,3050,7)/1000))*1000));set(gca,'xtickLabel',xlab);yticks(mmpxMap(round(pxmmMap(linspace(0,3050,7)/1000))*1000));set(gca,'ytickLabel',ylab)
+    xlim([0,3050]);ylim([0,2898])
+end
+
+if plt
+    xlabel('x(ft)');ylabel('y(ft)')
+    axis on
+    pbaspect([1 1 1])
+    xlab=get(gca,'xtickLabel');ylab=get(gca,'ytickLabel');
+
+    xlab={'0','5','10','15','20'};
+    ylab={num2str(round(pxinMap(0/12))),num2str(round(pxinMap(483/12))),num2str(round(pxinMap(966/12))),num2str(round(pxinMap(1449/12))),num2str(round(pxinMap(1932/12))),num2str(round(pxinMap(2415/12))),num2str(round(pxinMap(2898/12)))};
+    xticks(linspace(0,3050,5));set(gca,'xtickLabel',xlab);yticks(linspace(0,2898,7));set(gca,'ytickLabel',ylab)
+    xlim([0,3050]);ylim([0,2898])
+end
+
+vertical = @(P) all(P(1,1)==P(:,1));
+spdist = @(P,Ps) sqrt((P(1,1)-Ps(:,1)).^2 + (P(1,2)-Ps(:,2)).^2);
+spdist2 = @(Ps1,Ps2) sqrt((Ps1(:,1)-Ps2(:,1)).^2 + (Ps1(:,2)-Ps2(:,2)).^2);
+total_length = @(Ps) sum(sqrt(sum(diff(Ps).*diff(Ps),2)));
+
+Y = [0 colBW colBW 0]; X = [0 0 rowBW rowBW];
+extBound = polyshape(Y, X);
+
+final=extBound;                                 % External Boundary
+final_work=final;
+critP=0;loop1=true;ss=polybuffer([0,0],'points',s);aa=polybuffer([0,0],'points',a);
+PathEdge=[0,0];crackEdge=[];ttt=[];iMor=0;
+
+if worki;reg=plot(final,'FaceAlpha',0.1,'LineStyle','-','LineWidth',2);reg.EdgeColor=reg.FaceColor;end
+
+%% Main
+tStart = tic; plot(s/sqrt(2),s/sqrt(2),'v','Color','#0072BD','MarkerSize',15,'MarkerFaceColor','#0072BD')
+
+while any(final.regions.area>2*aa.area)
+tic    
+if exist('plreeb','var')
+    delete(plreeb);delete(reebt);delete(plmcdcrt);delete(plmcdcrtt);%delete(plPEdge);%delete(tt);
+%     delete(tt);
+end
+
+%%% MCD
+working = polybuffer(final_work,-s/5);
+working = polybuffer(working,s/5);
+bblob=regions(working);working=bblob(bblob.area>area(polybuffer([0,0],'points',a)));
+if size(regions(final_work),1)>1
+    final_work=regions(final_work);
+    final_work=final_work(~(area(polybuffer(final_work,-s/5))==0));
+    final_work=regJoin(final_work);
+end
+
+if size(working,1)~=size(final_work,1); working=final_work;end
+
+[subcritP,splitReg_work,splitReg,splitEdge]=MCD1(working,final_work,final,critP,sm_flag);
+splitReg_work = polyclean(splitReg_work);
+%%%
+
+subcritP=fliplr(subcritP);iMor=iMor+1;
+
+if isempty(subcritP); break;end
+
+%--------Reeb 
+[reebEdge,~,~,~,remreg]=Reeb(splitReg_work,subcritP,splitEdge);%subcritP=subcritP(unique(reebEdge),:);
+if ~isempty(remreg);splitReg_work(remreg)=[];end
+
+rMiss=find(~ismember((1:length(subcritP))',unique(reebEdge(:)),'rows'));r_rmin=[];indj=[];%rAreaN=[];
+
+adj = full(sparse(reebEdge(:, 1), reebEdge(:, 2), 1, size(subcritP,1), size(subcritP,1)));
+adj=adj+adj';
+rCont= 1:length(subcritP);
+rCont=rCont(sum(adj)==2);clear adj;
+
+rCont(ismember(rCont,rMiss))=[];
+
+if ~(isempty(rMiss)&&isempty(rCont))
+    for i=1:length(rMiss)
+        rdis=spdist(subcritP(rMiss(i),:),subcritP);rdis(~rdis)=inf;[~,rmin(i)]=min(rdis);
+
+        if any(rdis<s)
+            if numel(find(ismember(reebEdge,reebEdge(sum(ismember(reebEdge,rmin(i)),2)>0,:),'rows')))<3
+                rAreaN=find(ismember(reebEdge,reebEdge(sum(ismember(reebEdge,rmin(i)),2)>0,:),'rows'))';%rMiss(i);rAreaN;
+                if ~isempty(rAreaN)
+                    rNodeN=reebEdge(rAreaN,:);
+                    if size(rNodeN,1)>1
+                        reebEdge(rAreaN,:)=[];r_rmin=[r_rmin;rmin(i)];%(i,:)
+                        rArea=union(splitReg_work(rAreaN));splitReg_work(rAreaN)=[];%(i,:)
+                        splitReg_work=[splitReg_work;polybuffer(polybuffer(rArea,1),-1)];reebEdge=[reebEdge;rNodeN(~ismember(rNodeN,rmin(i)))'];
+                    end
+                end
+            end
+        else
+            indj=[indj,i];
+        end
+    end
+    
+    for i=1:length(rCont)
+        rAreaN=find(ismember(reebEdge,reebEdge(sum(ismember(reebEdge,rCont(i)),2)>0,:),'rows'))';
+        if ~isempty(rAreaN)
+            rNodeN=reebEdge(rAreaN,:);
+            if size(rNodeN,1)>1
+                reebEdge(rAreaN,:)=[];r_rmin=[r_rmin;rCont(i)];%(i,:)
+                rArea=union(splitReg_work(rAreaN));splitReg_work(rAreaN)=[];%(i,:)
+                splitReg_work=[splitReg_work;polybuffer(polybuffer(rArea,1),-1)];reebEdge=[reebEdge;rNodeN(~ismember(rNodeN,rCont(i)))'];
+            end
+        end
+    end
+    subcritP(unique([rMiss(:);rCont(:);r_rmin(:)]),:)=[];clear rmin
+end
+
+[reebEdge,reebCell,reeb,reebwall,remreg]=Reeb(splitReg_work,subcritP,splitEdge);
+if ~isempty(remreg);splitReg_work(remreg)=[];end
+
+%------------------------------------------
+
+allNode = subcritP;
+No_node = length(allNode);
+allEdge = reebEdge;
+G=graph(allEdge(:,1),allEdge(:,2));adj=full(adjacency(G));    
+
+
+if length(conncomp(graph(reebEdge(:,1),reebEdge(:,2)), 'OutputForm', 'cell'))>1
+    t1=sum(reshape(subcritP(reebEdge(:),2)<PathEdge(end,1),[],2),2)>1;  % Cell with both the critical points to the left of the current point 
+    if 0%any(t1)%& t2
+        rT = reebEdge(t1,:);[~,ind]=min(spdist(PathEdge(end,:),fliplr(subcritP(rT,:))));
+        ind=rT(ind);
+    else
+        [~,ind]=min(cellfun(@(x) min(spdist(PathEdge(end,:),x)),{splitReg_work(:).Vertices}));rc=reebEdge(reebCell==ind,:)';
+        [~,k]=min(abs(PathEdge(end,1)-subcritP(rc,2)));ind=rc(k);
+    end
+else
+    [~,ind]=min(cellfun(@(x) min(spdist(PathEdge(end,:),x)),{splitReg_work(:).Vertices}));rc=reebEdge(reebCell==ind,:)';
+    [~,k]=min(abs(PathEdge(end,1)-subcritP(rc,2)));ind=rc(k);
+end
+   
+[Path,wall_fol,~]=ReebPath2(adj,subcritP,reebEdge,splitReg_work,ind);se=[];seP=[];
+
+if worki
+    if iMor~=1;if exist('pllplot','var'); delete(pllplot);end;pllplot=plot(intersect(extBound,polybuffer(PathEdge(2:end,:),'line',s)),'FaceColor','y','FaceAlpha',0.1,'LineStyle','none');end
+    delete(reg);reg=plot(splitReg_work,'FaceAlpha',0.1,'LineStyle','-','LineWidth',2);for r=1:length(reg);reg(r).EdgeColor=reg(r).FaceColor;end
+    plreeb=plot(reeb(1:2:length(reeb(:,1)),:)',reeb((1:2:length(reeb(:,1)))+1,:)','LineWidth',2);
+    if any(wall_fol) 
+        for w_reeb=find(wall_fol)'
+            plreeb=[plreeb;plot(reebwall(w_reeb*2-1,:)',reebwall(w_reeb*2,:)','--','Color',plreeb(w_reeb).Color,'LineWidth',2)];
+        end
+    end
+    nuum1=int2str((1:length(reeb(:,1))/2)');for rr=1:length(nuum1);nuum2(rr,:)=regexprep(nuum1(rr,:),'.','_$0');end
+    reebt=text((reeb(1:2:length(reeb(:,1)),ceil(end/2))+20)',(reeb((1:2:length(reeb(:,1)))+1,ceil(end/2))+70)', [repmat('E',length(reeb(:,1))/2,1), nuum2],'FontSize',20);clear nuum1 nuum2;
+    
+    nuum1=int2str([1:length(subcritP)]');for rr=1:length(nuum1);nuum2(rr,:)=regexprep(nuum1(rr,:),'.','_$0');end
+    plmcdcrtt=text(subcritP(:,2)+20,subcritP(:,1)+70,[repmat('C',length(subcritP),1) nuum2],'FontSize',20);clear nuum1 nuum2;
+    plcurPP=[];
+    if iMor~=1;plcurPP=[plcurPP;plot([curPt(:,1),subcritP(Path(1,1),2)],[curPt(:,2),subcritP(Path(1,1),1)],'b-.','LineWidth',2.5)];end
+    if any(~Path(:,3))
+        for hh=find((~Path(:,3)))'
+            plcurPP=[plcurPP;plot(subcritP(Path(hh,1:2),2),subcritP(Path(hh,1:2),1),'b-.','LineWidth',2.5)];
+        end
+    end
+    if exist('plmcdcrt','var');delete(plmcdcrt);end;plmcdcrt=plot(subcritP(:,2),subcritP(:,1),'r.','MarkerSize',50);
+    xlim([0,3050]);ylim([0,2898])
+    snapnow
+end
+
+ 
+if plt
+    plti=plti+1;
+    if exist('plreeb','var')
+        delete(plmcdcrt);delete(plmcdcrtt);delete(plreeb);delete(reebt);%delete(reg);
+    end
+    reg=plot(final,'FaceColor','w','FaceAlpha',0.1,'LineStyle','-','LineWidth',2,'EdgeColor','#D95319');
+    plreeb=plot(reeb(1:2:length(reeb(:,1)),:)',reeb((1:2:length(reeb(:,1)))+1,:)','LineWidth',2);
+    nuum1=int2str((1:length(reeb(:,1))/2)');for rr=1:length(nuum1);nuum2(rr,:)=regexprep(nuum1(rr,:),'.','_$0');end
+    reebt=text((reeb(1:2:length(reeb(:,1)),ceil(end/2))+10)',(reeb((1:2:length(reeb(:,1)))+1,ceil(end/2))+50)', [repmat('E',length(reeb(:,1))/2,1), nuum2],'FontSize',12);clear nuum1 nuum2;
+    plmcdcrt=plot(subcritP(:,2),subcritP(:,1),'r.','MarkerSize',20);
+    nuum1=int2str([1:length(subcritP)]');for rr=1:length(nuum1);nuum2(rr,:)=regexprep(nuum1(rr,:),'.','_$0');end
+    plmcdcrtt=text(subcritP(:,2)+10,subcritP(:,1)+50,[repmat('C',length(subcritP),1) nuum2],'FontSize',12);clear nuum1 nuum2;
+    snapnow;figHandles = findall(0,'Type','figure'); 
+%     savefig(figHandles,['Results & Figs/' img_n '_unKnown_itr' num2str(plti) '.fig'])
+end
+
+if worki;ppn=ppn+1;saveas(gcf,['Results/GIF/' img_n '_unKnown_' num2str(ppn) '.png']);saveas(gcf,['Results/GIF/' img_n '_unKnown_' num2str(ppn)]);end
+
+%%% Boustrophedon Path
+if length(splitReg_work)==1
+    %%% Boustrophedon Path Generation
+    subXY = Boustrophedon4(Path,splitReg_work,se,seP,critP,wall_fol,false,sim);
+else
+    %%% Boustrophedon Path Generation with Cell Connection Algorithm
+    subXY = Boustrophedon4_CellCon(Path,splitReg_work,se,seP,critP,wall_fol,false,sim);
+end
+
+if worki
+    pp=plot(subXY(:,1),subXY(:,2));
+    delete(pp)
+end
+
+
+clear wall_fol;
+if exist('plreeb','var')
+   delete(plmcdcrt);delete(plmcdcrtt);delete(plreeb);delete(reebt);%delete(plcurPP)%delete(reg);
+end
+
+if loop1 
+    zigzag=total_length(subXY);ziglen=pxinMap(zigzag)/12;
+    WSarea = 2*pxinMap(s/sqrt(2))/12*ziglen;
+end
+
+subXY=[subXY,zeros(size(subXY,1),1)];
+
+fill=false;bww=sparse([],[],[],2*s,2*s);
+
+i=1;crack=0;clear preCrack;
+test=0;fl=false;fflg=false;intPoints=zeros(size(BW3));d=0;d_lock=0;ww=[];
+ttt=[ttt,toc];hold on
+
+if worki;ppn=ppn+1;saveas(gcf,['Results/GIF/' img_n '_unKnown_' num2str(ppn) '.png']);end
+
+while i<=length(subXY)
+    tic
+    curPt=subXY(i,[1,2]);
+    if subXY(i,3)
+        [bwr,bwc]=sMaskid(BW_working,a,curPt);
+        bww(bwr,bwc)= 0;
+    end
+
+    %%%New Extraction method
+    [in,~]=inpolygon(mBW,nBW,polybuffer(fliplr(curPt),'points',s).Vertices(:,1),polybuffer(fliplr(curPt),'points',s).Vertices(:,2));
+    for bwh=find(in)';crackGen(mBW(bwh),nBW(bwh))=1;crackGGen(mBW(bwh),nBW(bwh))=1;end
+    m=mBW(in);n=nBW(in);v=ones(length(find(in)),1); 
+    
+    %%%%
+    I=crackGen;I_te=I;
+    while true
+        intPoints = intPoints + bwmorph_vv(I,2); %2: Branchpoints
+        I_te(intPoints>0)=0;BW3(intPoints>0)=0;
+        pixelP=bwmorph_vv(I_te,0); %0: Single Pixels
+        I_te(pixelP>0)=0;BW3(pixelP>0)=0;
+        
+        if ~isequal(I,I_te) 
+           I=I_te;
+        else
+           break;
+        end            
+    end
+    crackGen=I;
+    %%%%
+    
+    %%%%
+    [eP,rP,~] = endP_ident(crackGen,BW3);endlogi=0;
+    ttt=[ttt,toc];
+    if size(rP,1)>1
+        [~,line,~,~] = compCrack2(crackGen,eP,dir_map,[]);
+        endlogi = reshape(sum(cell2mat(cellfun(@(s) spdist(s,[line(:,1) line(:,2);line(:,3) line(:,4)]),num2cell( rP, 2),'un',0)')<5,2)>0,[],2);
+    end
+    %%%%
+    
+    tic
+    if ~isempty(m) && (~all(m==m(1)) && ~all(n==n(1))) || (max(sum(endlogi,2))==2 && any(spdist2(line(:,1:2),line(:,3:4))>a))
+    
+    if worki
+        if exist('pcp','var');delete(pcp);end
+        [p1,p2]=find(sparse(crackGGen));
+        pcp=plot(p2,p1,'k.','LineWidth',2);
+        if exist('pctp','var');delete(pctp);delete(pctps);end%delete(pctps2);
+        pctps=plot(polybuffer(curPt,'points',s),'FaceColor','y','FaceAlpha',0.1,'LineStyle','-','LineWidth',1);%pctps2=plot(polybuffer(curPt,'points',s*sqrt(2)),'FaceColor','r','FaceAlpha',0.1,'LineStyle','--','LineWidth',1);
+        pctp=plot(polybuffer(curPt,'points',a*sqrt(2)),'FaceColor','r','FaceAlpha',0.3,'LineStyle','-','LineWidth',1);        
+    end
+
+    [eP,rP,cP] = endP_ident(crackGen,BW3);
+        
+        %%% New Test
+        if size(rP,1)>1
+            ttt=[ttt,toc];
+            [crackRaw,~,~,~] = compCrack2(crackGen,eP,dir_map,[]);
+            tic
+            if ~isempty(ww)
+                ww1=ww(1:find(ismember(ww,subXY(i,1:2),'rows')),:);int=[];[int(:,1),int(:,2)]=find(intPoints>0);
+                if ~isempty(ww1)
+                    pp=polybuffer(subXY(1:i,1:2),'line',a+25);
+                    for c=1:size(crackRaw,2)
+                        if ~isempty(rP)
+                            if sum(ismember(crackRaw{c}([1,end],:),rP,'rows'))==2 || length(find(spdist(crackRaw{c}(1,:),rP)<a | spdist(crackRaw{c}(end,:),rP)<a))==2%(all(spdist(crackRaw{c}(1,:),rP)<a) && all(spdist(crackRaw{c}(end,:),rP)<a))
+                                in=isinterior(pp,fliplr(crackRaw{c}([1,end],:)));endPoints=crackRaw{c}([1,end],:);
+                                c_chq = isinterior(pp,fliplr(crackRaw{c}));c_chq=length(find(c_chq))/length(c_chq)*100;  % Checks for correct crack to remove
+
+                                if sum(in)==2 && c_chq>90
+                                    post=[];
+                                    for ee = 1:2
+                                        row=endPoints(ee,1);
+                                        col=endPoints(ee,2);
+                                        I = crackGen;
+                                        b = [I(row-1,col-1:col+1) ...
+                                                I(row, col-1) I(row, col+1)...
+                                                I(row+1,col-1:col+1)];
+                                        post = [post;sum(b)];
+                                    end
+                                    [m,n,v]=find(sparse(crackGen)); v(ismember([m,n],crackRaw{c},'rows'))=0;
+                                    rind=ismember([mBW,nBW],crackRaw{c},'rows');mBW(rind)=[];nBW(rind)=[];vBW(rind)=[];
+                                    crackGen=full(sparse([m;round(rowBW)],[n;round(colBW)],[v;1]));crackGen(round(rowBW),round(colBW))=0;fl=true;
+                                    [m,n,v]=find(sparse(BW_working)); v(ismember([m,n],crackRaw{c},'rows'))=0;
+                                    BW_working=full(sparse([m;round(rowBW)],[n;round(colBW)],[v;1]));BW_working(round(rowBW),round(colBW))=0;
+                                     [m,n,v]=find(sparse(BW3)); v(ismember([m,n],crackRaw{c},'rows'))=0;
+                                     BW3=full(sparse([m;round(rowBW)],[n;round(colBW)],[v;1]));BW3(round(rowBW),round(colBW))=0;   
+                                     if ~isempty(int);BW3(int(isinterior(pp,fliplr(int)),1),int(isinterior(pp,fliplr(int)),2))=0;end;BW3=bwmorph(BW3,'clean'); % Cleans int points 
+                                    for ii=1:2; if post(ii)>1;crackGen(endPoints(ii,1),endPoints(ii,2))=1;BW_working(endPoints(ii,1),endPoints(ii,2))=1;BW3(endPoints(ii,1),endPoints(ii,2))=1;end;end 
+                                    stt=fliplr(curPt);crackGen=bwmorph(crackGen,'thin', inf);fflg=true;d_lock=[];
+                                    if ~isempty(bww);[m,n,v]=find(sparse(bww)); v(ismember([m,n],crackRaw{c},'rows'))=0;
+                                    bww=full(sparse(m,n,v));end
+                                    [eP,rP,cP] = endP_ident(crackGen,BW3);
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        %%%
+
+        if ~subXY(i,3)
+            stt=fliplr(curPt);
+        else
+            d_lock=d_lock+1; %Records when stt!=cp
+        end
+        
+        if ~exist('preCrack','var')
+            ttt=[ttt,toc];
+            [WP,flag,preCrack,tt] = image_planning_func2(crackGen,a,s,stt,fliplr(curPt),eP,rP,cP,subXY(1:i,1:2),[]);
+            ttt=[ttt,tt];tic
+        else
+            ttt=[ttt,toc];
+            [WP,flag,preCrack,tt] = image_planning_func2(crackGen,a,s,stt,fliplr(curPt),eP,rP,cP,subXY(1:i,1:2),preCrack);
+            ttt=[ttt,tt];tic
+        end
+        numItr=numItr+1;
+
+        if flag
+            if exist('plpath','var');delete(plpath);delete(plpathA);end
+            if i==1
+                d=1;
+            else
+                if ~subXY(i-1,3) || fl 
+                    d=1;fl=0;
+                else
+                    d=d+1;  
+                end
+            end
+            subXY(i+1:end,:)=[];crack = 1;
+            if d==1
+                subXY=[subXY;[fliplr(WP(d:end,[1,2])),WP(d:end,3)]];
+            elseif ismember(subXY(end,1:2),fliplr(WP(:,1:2)),'rows')
+                indWP=find(ismember(fliplr(WP(:,1:2)),subXY(end,1:2),'rows'))+1;
+                subXY=[subXY;[fliplr(WP(indWP:end,[1,2])),WP(indWP:end,3)]];
+            else
+                mDist=spdist(subXY(end,1:2),fliplr(WP(:,1:2)));
+                [~,mLoc(1)]=min(mDist);mDist(mLoc(1))=inf;[~,mLoc(2)]=min(mDist);
+                subXY=[subXY;[fliplr(WP(max(mLoc):end,[1,2])),WP(max(mLoc):end,3)]];
+            end
+            
+            ww=fliplr(WP(:,[1,2]));
+            if worki;plpath=plot(subXY(:,1),subXY(:,2),'--','Color','#D95319','LineWidth',2.5);plpath=[plpath;plot(PathEdge(2:end,1),PathEdge(2:end,2),'--','Color','#D95319','LineWidth',2.5)];plpathA=drawArrowHead(subXY(end-2,1:2),subXY(end,1:2),'#D95319');xlim([0,3050]);ylim([0,2898]);end
+            snapnow;if worki;ppn=ppn+1;saveas(gcf,['Results/GIF/' img_n '_unKnown_' num2str(ppn) '.png']);end
+        else
+            if d_lock==1
+                d=1;
+            else
+                d=d+1;
+            end
+            if worki;if exist('plpath','var');delete(plpath);delete(plpathA);end; plpath=plot(subXY(:,1),subXY(:,2),'--','Color','#D95319','LineWidth',2.5);plpath=[plpath;plot(PathEdge(2:end,1),PathEdge(2:end,2),'--','Color','#D95319','LineWidth',2.5)];plpathA=drawArrowHead(subXY(end-2,1:2),subXY(end,1:2),'#D95319');xlim([0,3050]);ylim([0,2898]);end
+            if worki;ppn=ppn+1;saveas(gcf,['Results/GIF/' img_n '_unKnown_' num2str(ppn) '.png']);end
+        end
+    else
+        [eP,rP,cP] = endP_ident(crackGen,BW3);
+        %%% New Test
+        if size(rP,1)>1
+            ttt=[ttt,toc];
+            [crackRaw,~,~,~] = compCrack2(crackGen,eP,dir_map,[]);
+            tic
+            if ~isempty(ww)
+                ww1=ww(1:find(ismember(ww,subXY(i,1:2),'rows')),:);
+                if ~isempty(ww1)
+                    pp=polybuffer(subXY(1:i,1:2),'line',a+25);
+                    for c=1:size(crackRaw,2)
+                        if ~isempty(rP)
+                            if sum(ismember(crackRaw{c}([1,end],:),rP,'rows'))==2
+                                in=isinterior(pp,fliplr(crackRaw{c}([1,end],:)));endPoints=crackRaw{c}([1,end],:);
+                                if sum(in)==2
+                                    post=[];
+                                    for ee = 1:2
+                                        row=endPoints(ee,1);
+                                        col=endPoints(ee,2);
+                                        I = crackGen;
+                                        b = [I(row-1,col-1:col+1) ...
+                                                I(row, col-1) I(row, col+1)...
+                                                I(row+1,col-1:col+1)];
+                                        post = [post;sum(b)];
+                                    end
+                                    [m,n,v]=find(sparse(crackGen)); v(ismember([m,n],crackRaw{c},'rows'))=0;
+                                    rind=ismember([mBW,nBW],crackRaw{c},'rows');mBW(rind)=[];nBW(rind)=[];vBW(rind)=[]; 
+                                    crackGen=full(sparse([m;round(rowBW)],[n;round(colBW)],[v;1]));crackGen(round(rowBW),round(colBW))=0;fl=true;
+                                    [m,n,v]=find(sparse(BW_working)); v(ismember([m,n],crackRaw{c},'rows'))=0;
+                                    BW_working=full(sparse([m;round(rowBW)],[n;round(colBW)],[v;1]));BW_working(round(rowBW),round(colBW))=0;
+                                    for ii=1:2; if post(ii)>1;crackGen(endPoints(ii,1),endPoints(ii,2))=1;BW_working(endPoints(ii,1),endPoints(ii,2))=1;end;end 
+                                    stt=fliplr(curPt);crackGen=bwmorph(crackGen,'thin', inf);fflg=true;
+                                    if ~isempty(bww);[m,n,v]=find(sparse(bww)); v(ismember([m,n],crackRaw{c},'rows'))=0;
+                                    bww=full(sparse(m,n,v));end
+                                    [eP,rP,cP] = endP_ident(crackGen,BW3,org);
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        if worki
+            if exist('pcp','var');delete(pcp);end
+            [p1,p2]=find(sparse(crackGGen));
+            pcp=plot(p2,p1,'k.','LineWidth',2);
+            if exist('pctp','var');delete(pctps);delete(pctp);end
+            pctps=plot(polybuffer(curPt,'points',s),'FaceColor','y','FaceAlpha',0.1,'LineStyle','-','LineWidth',1);
+            pctp=plot(polybuffer(curPt,'points',a*sqrt(2)),'FaceColor','r','FaceAlpha',0.3,'LineStyle','-','LineWidth',1);
+        end
+        
+        if worki;if exist('plpath','var');delete(plpath);delete(plpathA);end; plpath=plot(subXY(:,1),subXY(:,2),'--','Color','#D95319','LineWidth',2.5);plpath=[plpath;plot(PathEdge(2:end,1),PathEdge(2:end,2),'--','Color','#D95319','LineWidth',2.5)];plpathA=drawArrowHead(subXY(end-2,1:2),subXY(end,1:2),'#D95319');xlim([0,3050]);ylim([0,2898]);end
+        if worki;ppn=ppn+1;saveas(gcf,['Results/GIF/' img_n '_unKnown_' num2str(ppn) '.png']);end
+
+        %%%
+
+    end
+    i=i+1; 
+    
+    if i>=length(subXY(:,1)) && fflg
+        subXY=[subXY;subXY(end,:)];fflg=false;
+    end
+end
+
+
+obj = polybuffer(fliplr(subXY(:,[2,1])),'line',s);
+[px,py]=obj.boundary;
+if ~(px(1)==px(end)&&py(1)==py(end));px(end+1)=px(1);py(end+1)=py(1);end
+obj.Vertices=DecimatePoly([px,py],[1 1],false);
+
+final = subtract(final,obj);final_work = subtract(final_work,obj);
+
+splitReg_work=subtract(splitReg_work,obj);
+
+PathEdge=[PathEdge;subXY(:,[1,2])];
+final = polyclean(final);
+
+if worki
+    plPEdge=plot(PathEdge(:,1),PathEdge(:,2));
+end
+
+if length(splitReg_work)==1
+    final_work=splitReg_work;
+    final_work = polyclean(final_work);
+else
+    splitReg_work = polyclean(splitReg_work);
+    if ~isempty(splitReg_work)
+        final_work = regCombine(splitReg_work);
+    end
+end
+
+final_work = polyclean(final_work);
+
+critP=PathEdge(end,:);
+
+if worki
+    delete(reg)
+    reg=plot(final,'FaceAlpha',0.1,'LineStyle','none');loop1=false;
+    snapnow
+end
+
+ttt=[ttt,toc];
+end
+
+if plt
+    plot(PathEdge(2:end,1),PathEdge(2:end,2),'--','Color','#D95319')
+    plot(PathEdge(end,1),PathEdge(end,2),'^','Color','#77AC30','MarkerSize',20,'MarkerFaceColor','#77AC30')
+    plot(PathEdge(2,1),PathEdge(2,2),'v','Color','#0072BD','MarkerSize',20,'MarkerFaceColor','#0072BD')
+end
+
+if plt
+    reg=plot(splitReg_work,'FaceColor','w','FaceAlpha',0.1,'LineStyle','-','LineWidth',2,'EdgeColor','#D95319');plpathA=[];
+    plot(PathEdge(2:end,1),PathEdge(2:end,2),'k--','LineWidth',2);%,'Color','#D95319')
+    plot(PathEdge(end,1),PathEdge(end,2),'^','Color','#77AC30','MarkerSize',15,'MarkerFaceColor','#77AC30')
+    plot(PathEdge(2,1),PathEdge(2,2),'v','Color','#0072BD','MarkerSize',15,'MarkerFaceColor','#0072BD')
+    for dA=30:40:length(PathEdge(:,1))
+        plpathA=[plpathA;drawArrowHead(PathEdge(dA-1,:),PathEdge(dA,:),'k')];
+    end
+    xlim([0,3050]);ylim([0,2898])
+    ppn=ppn+1;saveas(gcf,['Results/GIF/' img_n '_Known_' num2str(ppn) '.png']);saveas(gcf,['Results/GIF/' img_n '_Known_' num2str(ppn)]);
+end
+
+tMul = sum(ttt);tEnd = toc(tStart);disp(tMul); disp(tEnd)
+%% Calculations
+
+pathLength=total_length(rmmissing(PathEdge(2:end,:)));oscclen=pxinMap(pathLength)/12;
+areaCover = 2*pxinMap(s/sqrt(2))/12*oscclen;
+Ovp_Area =areaCover-WSarea;
+coverPercent=areaCover/WSarea;
+ovlapPercent=Ovp_Area/WSarea;
+
+res = [numItr,den(dd),tMul,oscclen,areaCover];res=round(res,3);disp(res)
+
+figure, imshow(~crackGen)
+pos=get(gcf, 'Position');hold on
+xlabel('x(ft)');ylabel('y(ft)')
+[rowBW, colBW]= size(BW3);
+axis([0-150 colBW+150 0-150 rowBW+150])
+axis on
+pbaspect([1 1 1])
+xlab=get(gca,'xtickLabel');ylab=get(gca,'ytickLabel');
+xlab=cellfun(@(x) fix(pxinMap(str2num(x))/12),xlab,'un',0);
+ylab=cellfun(@(x) fix(pxinMap(str2num(x))/12),ylab,'un',0);
+set(gca,'xtickLabel',xlab)
+set(gca,'ytickLabel',ylab)
+
+plot(PathEdge(:,1),PathEdge(:,2),'*--');
+plot(PathEdge(1,1),PathEdge(1,2),'b^','MarkerSize',10,'MarkerFaceColor','b')
+plot(PathEdge(end,1),PathEdge(end,2),'g^','MarkerSize',10,'MarkerFaceColor','g')
+text(PathEdge([1,end],1)+30,PathEdge([1,end],2)+30,{'Start','End'})
+
+close all
+
+ress=[ress;res]
+end 
+
+% if ~Gau
+%     % Uniform Distribution
+%     saveas(gcf,['Results/oSCC/Uniform3/' img_n '_unKnown.png'])
+%     save(['Results/oSCC/Uniform3/' img_n '_unKnown.mat'],'PathEdge','res')
+% else
+%     % Gaussian Distribution
+%     saveas(gcf,['Results/oSCC/Gaussian3/Gaussian_Results' Gaussb '/' img_n '_unKnown.png'])
+%     save(['Results/oSCC/Gaussian3/Gaussian_Results' Gaussb '/' img_n '_unKnown.mat'],'PathEdge','res')
+% end
+% close all
+
+%% Functions
+%{
+% function [critP,polyout_work,polyout,splitEdge]=MCD(polyin_buffed,polyin_work,polyin,nodeend)
+% 
+%     style='r*';nodeend=fliplr(nodeend);
+%     critP =[];splitEdge=[];cave=[];t=0.5;
+%     boundary=rmholes(polyin_buffed);
+%     spdist = @(P,Ps) sqrt((P(1,1)-Ps(:,1)).^2 + (P(1,2)-Ps(:,2)).^2);
+% 
+%     % Smooth Polyshape Edge
+%     jj=regions(boundary);
+%     boundary=polyshape();
+%     newBoundary = [];
+%     for i = 1:length(jj)
+%         x=jj(i).Vertices(:,1);
+%         y=jj(i).Vertices(:,2);
+%         smoothX = smooth(x);smoothX = smooth(smoothX);% known ,'sgolay',3
+%         smoothY = smooth(y);smoothY = smooth(smoothY);% known ,'sgolay',3
+%         jj(i) =polyshape([smoothX,smoothY]);%boundary.plot
+%         %boundary=addboundary(boundary,jj(i).Vertices);
+%         [Bound(:,1),Bound(:,2)] =jj(i).boundary;Bound(end,:)=[];
+%         [values(:,1),values(:,2)] =jj(i).boundary;values(end,:)=[];
+%         ii=0;
+%         for j = 1:length(values(:,1))
+%             P1=values(j,:);
+%             P2=values(mod(j,length(values(:,1)))+1,:);
+%             mid=(P1(:)+ P2(:)).'/2;
+%             Bound=[Bound(1:j+ii,:) ;mid; Bound(1+j+ii:end,:)];
+%             ii=ii+1;
+%         end
+%         if i==1
+%             newBoundary = [newBoundary; Bound(end,:);Bound];clear values Bound;
+%         else
+%             newBoundary = [newBoundary; nan,nan;Bound(end,:);Bound];clear values Bound;
+%         end
+%     end
+%     
+%     % Forward boundary scan
+%     TF=islocalmin(newBoundary,'FlatSelection', 'center');
+%     TF([find(isnan(newBoundary(:,1)))+1 ; find(isnan(newBoundary(:,1)))-1],:)=0;
+%     subcritP=newBoundary(TF(:,1),:);inPoly=polyshape(newBoundary);
+%     % plot(newBoundary(TF(:,1),1),newBoundary(TF(:,1),2),style)
+%     for j=find(TF(:,1))'
+%         [in,out] = intersect(inPoly,[newBoundary(j,1) newBoundary(mod(j+4-1,length(TF(:,1)))+1,2);newBoundary(j,1) newBoundary(mod(j-4-1,length(TF(:,1)))+1,2)]);%inter=fliplr(inter);
+%         if isempty(in); cave=[cave;1];end
+%         if isempty(out); cave=[cave;0];end
+%     end
+%     critP = [critP;subcritP];%cave=[cave;ones(length(subcritP(:,1)),1)];
+%  
+%     % Holes boundary scan
+%     obj=holes(polyin_buffed);
+%     obj = polybuffer(obj, 10);%obj.plot
+%     obj = polybuffer(obj,-10,'JointType','miter','MiterLimit',4);%obj.plot
+% 
+%     poly=obj;
+% 
+%     for i= 1: length(poly)
+%         [values(:,1),values(:,2)] =poly(i).boundary;%spcrv(poly(i).Vertices',3);values=values';
+%         TF=islocalmin(values(:,1));TF([find(isnan(values(:,1)))+1 ; find(isnan(values(:,1)))-1],:)=0;
+%         subcritP=values(TF(:,1),:);
+%     %     plot(subcritP(:,1),subcritP(:,2),style)
+%         critP = [critP;subcritP];
+%         for j = find(TF(:,1))'
+%             v1=values(mod(j+4-1,length(TF(:,1)))+1,:)-values(j,:);%vectarrow(values(j,:),values(j+4,:))
+%             v2=values(mod(j-4-1,length(TF(:,1)))+1,:)-values(j,:);%vectarrow(values(j,:),values(j-4,:))
+%             if ab2v(v1,v2)<180
+%                 cave=[cave;1];
+%             else
+%                 cave=[cave;0];
+%             end
+%         end
+% 
+%         TF=islocalmax(values);TF([find(isnan(values(:,1)))+1 ; find(isnan(values(:,1)))-1],:)=0;
+%         subcritP=values(TF(:,1),:);
+%     %     plot(subcritP(:,1),subcritP(:,2),style)
+%         critP = [critP;subcritP];
+%         for j = find(TF(:,1))'
+%             v1=values(mod(j+4-1,length(TF(:,1)))+1,:)-values(j,:);%vectarrow(values(j,:),values(j+4,:))
+%             v2=values(mod(j-4-1,length(TF(:,1)))+1,:)-values(j,:);%vectarrow(values(j,:),values(j-4,:))
+%             if ab2v(v1,v2)<180
+%                 cave=[cave;1];
+%             else
+%                 cave=[cave;0];
+%             end
+%         end
+%         clear values
+%     end
+%     
+%     % Backward boundary scan
+%     TF=islocalmax(newBoundary,'FlatSelection', 'center');
+%     TF([find(isnan(newBoundary(:,1)))+1 ; find(isnan(newBoundary(:,1)))-1],:)=0;
+%     subcritP=newBoundary(TF(:,1),:);
+%     % plot(newBoundary(TF(:,1),1),newBoundary(TF(:,1),2),style)
+%     critP = [critP;subcritP];%cave=[cave;ones(length(subcritP(:,1)),1)];
+%     
+%     for j=find(TF(:,1))'
+%         [in,out] = intersect(inPoly,[newBoundary(j,1) newBoundary(mod(j+4-1,length(TF(:,1)))+1,2);newBoundary(j,1) newBoundary(mod(j-4-1,length(TF(:,1)))+1,2)]);%inter=fliplr(inter);
+%         if isempty(in); cave=[cave;1];end
+%         if isempty(out); cave=[cave;0];end
+%     end
+%     
+% %     plot(critP(:,1),critP(:,2),style)
+% %     plmcdcrtt=text(critP(:,1)+10,critP(:,2)+10,[repmat('C',length(critP),1) int2str([1:length(critP)]')]);
+% 
+%     % Decomposing the cells
+%     ymin = round(min(polyin_buffed.Vertices(:,2)));ymax=round(max(polyin_buffed.Vertices(:,2)));
+%     for c = 1:length(critP(:,1))
+%             bool=false;
+%             [in,out] = intersect(polyin_buffed,[critP(c,1),ymin;critP(c,1),ymax]);%in=fliplr(in);out=fliplr(out);
+%             if ymax-in(end,2)<50; in(end,2)=ymax;end                              % Keep in mind
+%             if in(1,2)-ymin<50; in(1,2)=ymin;end                                  % Keep in mind
+%             if cave(c)==0
+%                 if sum(isnan(out(:,1)))==0 
+%                     splitEdge = [splitEdge ; polybuffer([in(1,:);in(end,:)],'lines',t)];%cave(c)=0;
+%                 else
+%                     oo = rmmissing(out);
+%                     for k = 1:sum(isnan(out(:,1)))+1
+%                         if oo(2*k-1,2)<critP(c,2) && oo(2*k,2)>critP(c,2)
+%                             bool=true;
+%                             break;
+%                         end
+%                     end
+%                     if bool 
+%                         splitEdge = [splitEdge ; polybuffer([in((find(oo(2*k-1,2)==in(:,2))+1)-2,:);in((find(oo(2*k-1,2)==in(:,2))+1)+2,:)]+[0,-2;0,2],'lines',t)];
+%                         %cave(c)=0;
+%                     end
+%                 end
+%             end
+%     end
+%      
+%     distt=[];
+%     for ii = 1:length(critP)
+%        distt = [distt,spdist(critP(ii,:),critP)];
+%     end
+%     distt(distt==0)=inf;
+%     if min(distt(:))<=25
+%         A=min(distt(:))==distt;A(find(cave),:)=[];
+%         for ii=1:length(A(:,1))
+%            critP(A(ii,:),:)=[]; 
+%         end
+%     end
+% 
+%     if ~isempty(splitEdge)
+%         for i=1:length(splitEdge)
+%             polyin_work=subtract(polyin_work,splitEdge(i));%splitEdge.plot          % Splits the Poly region into different cells, Decompsition 
+%             polyin=subtract(polyin,splitEdge(i));        
+%         end
+%     end
+%     polyin_work = sortregions(polyin_work,'centroid','ascend');
+%     polyin = sortregions(polyin,'centroid','ascend');
+% 
+%     polyout_work=regions(polyin_work);
+%     polyout=regions(polyin);
+% 
+% end
+
+% function [critPT,polyout_work,polyout,splitEdge]=MCD2(polyin_buffed,polyin_work,polyin,nodeend)
+%     if length(polyin_buffed)==1; polyin_buffed=regions(polyin_buffed);end
+%     critPT =[];splitEdge=[];
+%     for p = 1:length(polyin_buffed)
+%         style='r*';nodeend=fliplr(nodeend);t=0.5;
+%         boundary=rmholes(polyin_buffed(p));
+%         spdist = @(P,Ps) sqrt((P(1,1)-Ps(:,1)).^2 + (P(1,2)-Ps(:,2)).^2);
+%         critP =[];cvex=[];
+%         % Smooth Polyshape Edge
+%         jj=regions(boundary);
+%         boundary=polyshape();
+%         newBoundary = [];
+%         for i = 1:length(jj)
+%             x=jj(i).Vertices(:,1);
+%             y=jj(i).Vertices(:,2);
+%             smoothX = smooth(x);smoothX = smooth(smoothX);% known ,'sgolay',3
+%             smoothY = smooth(y);smoothY = smooth(smoothY);% known ,'sgolay',3
+%             jj(i) =polyshape([smoothX,smoothY]);%boundary.plot
+% %             boundary=addboundary(boundary,jj(i).Vertices);
+%             [Bound(:,1),Bound(:,2)] =jj(i).boundary;Bound(end,:)=[];
+%             [values(:,1),values(:,2)] =jj(i).boundary;values(end,:)=[];
+%             ii=0;
+%             for j = 1:length(values(:,1))
+%                     P1=round(values(j,:),5);
+%                     P2=round(values(mod(j,length(values(:,1)))+1,:),5);
+%                     mid=(P1(:)+ P2(:)).'/2;
+%                     Bound=[Bound(1:j+ii,:) ;mid; Bound(1+j+ii:end,:)];
+%                     ii=ii+1;
+%             end
+%             
+% %             Bound = [smooth(Bound(:,1)) smooth(Bound(:,2))];% known ,'sgolay',3
+% %             Bound = [smooth(Bound(:,1)) smooth(Bound(:,2))];% known ,'sgolay',3
+%             
+%             if i==1
+%                 newBoundary = [newBoundary; Bound(end,:);Bound];clear values Bound;%
+%                 newBoundary=circshift(newBoundary,fix(size(newBoundary,1)/10));
+%             else
+%                 newBoundary = [newBoundary; nan,nan;Bound(end,:);Bound];clear values Bound;%
+%                 newBoundary=circshift(newBoundary,fix(size(newBoundary,1)/10));
+%             end
+%         end
+%         
+%         % bb1=convhull(newBoundary);
+% 
+%         % Forward boundary scan
+%         TF=islocalmin(round(newBoundary,5),'FlatSelection', 'center');
+%         TF([find(isnan(newBoundary(:,1)))+1 ; find(isnan(newBoundary(:,1)))-1],:)=0;
+%         subcritP=newBoundary(TF(:,1),:);inPoly=polyshape(newBoundary);%inPoly.plot
+% %         plot(newBoundary(TF(:,1),1),newBoundary(TF(:,1),2),style)
+% %         for j=find(TF(:,1))'
+% %             [in,out] = intersect(inPoly,[newBoundary(j,1) newBoundary(mod(j+4-1,length(TF(:,1)))+1,2);newBoundary(j,1) newBoundary(mod(j-4-1,length(TF(:,1)))+1,2)]);%inter=fliplr(inter);
+% %             if isempty(in); cvex=[cvex;1];end
+% %             if isempty(out); cvex=[cvex;0];end
+% %         end
+% 
+%         for j=find(TF(:,1))'
+%             [in,out] = intersect(inPoly,[newBoundary(j,1) newBoundary(j,2)+5;newBoundary(j,1) newBoundary(j,2)-5]);%inter=fliplr(inter);
+%             if isempty(in)||sum(~ismember(in(:,2),out(:,2)))==0; cvex=[cvex;1];else; cvex=[cvex;0]; end
+% %             if isempty(out); cvex=[cvex;0];end
+%         end
+% %         cvex=[cvex;ismember(find(TF(:,1)),bb1)];
+%         critP = [critP;subcritP];%cave=[cave;ones(length(subcritP(:,1)),1)];
+%         % plot(critP(:,1),critP(:,2),'r*');plot(critP(find(cvex),1),critP(find(cvex),2),'k*')
+% 
+%         % Holes boundary scan
+%         obj=holes(polyin_buffed(p));
+%         obj = polybuffer(obj, 10);%obj.plot
+%         obj = polybuffer(obj,-10,'JointType','miter','MiterLimit',4);%obj.plot
+% 
+%         poly=obj;
+% 
+%         for i= 1: length(poly)
+%             [values(:,1),values(:,2)] =poly(i).boundary;%spcrv(poly(i).Vertices',3);values=values';
+%             bb2=convhull(values);
+%             TF=islocalmin(values(:,1));TF([find(isnan(values(:,1)))+1 ; find(isnan(values(:,1)))-1],:)=0;
+%             subcritP=values(TF(:,1),:);
+% %             plot(subcritP(:,1),subcritP(:,2),style)
+%             critP = [critP;subcritP];
+% %             for j = find(TF(:,1))'
+% %                 v1=values(mod(j+4-1,length(TF(:,1)))+1,:)-values(j,:);%vectarrow(values(j,:),values(j+4,:))
+% %                 v2=values(mod(j-4-1,length(TF(:,1)))+1,:)-values(j,:);%vectarrow(values(j,:),values(j-4,:))
+% %                 if ab2v(v1,v2)<180
+% %                     cvex=[cvex;1];
+% %                 else
+% %                     cvex=[cvex;0];
+% %                 end
+% %             end
+%             for j=find(TF(:,1))'
+%                 [in,out] = intersect(inPoly,[newBoundary(j,1) newBoundary(j,2)+5;newBoundary(j,1) newBoundary(j,2)-5]);%inter=fliplr(inter);
+%                 if isempty(in)||sum(~ismember(in(:,2),out(:,2)))==0; cvex=[cvex;1];else; cvex=[cvex;0]; end
+% %                 if isempty(out); cvex=[cvex;0];end
+%             end
+% %             cvex=[cvex;ismember(find(TF(:,1)),bb2)];
+%             TF=islocalmax(values);TF([find(isnan(values(:,1)))+1 ; find(isnan(values(:,1)))-1],:)=0;
+%             subcritP=values(TF(:,1),:);
+% %             plot(subcritP(:,1),subcritP(:,2),style)
+%             critP = [critP;subcritP];
+% %             for j = find(TF(:,1))'
+% %                 v1=values(mod(j+4-1,length(TF(:,1)))+1,:)-values(j,:);%vectarrow(values(j,:),values(j+4,:))
+% %                 v2=values(mod(j-4-1,length(TF(:,1)))+1,:)-values(j,:);%vectarrow(values(j,:),values(j-4,:))
+% %                 if ab2v(v1,v2)<180
+% %                     cvex=[cvex;1];
+% %                 else
+% %                     cvex=[cvex;0];
+% %                 end
+% %             end
+%             for j=find(TF(:,1))'
+%                 [in,out] = intersect(inPoly,[newBoundary(j,1) newBoundary(j,2)+5;newBoundary(j,1) newBoundary(j,2)-5]);%inter=fliplr(inter);
+%                 if isempty(in)||sum(~ismember(in(:,2),out(:,2)))==0; cvex=[cvex;1];else; cvex=[cvex;0]; end
+% %                 if isempty(out); cvex=[cvex;0];end
+%             end
+% %             cvex=[cvex;ismember(find(TF(:,1)),bb2)];
+%             clear values
+%         end
+% 
+%         % Backward boundary scan
+%         TF=islocalmax(round(newBoundary,5),'FlatSelection', 'center');
+%         TF([find(isnan(newBoundary(:,1)))+1 ; find(isnan(newBoundary(:,1)))-1],:)=0;
+%         subcritP=newBoundary(TF(:,1),:);
+% %         plot(newBoundary(TF(:,1),1),newBoundary(TF(:,1),2),style)
+%         critP = [critP;subcritP];%cave=[cave;ones(length(subcritP(:,1)),1)];
+% % 
+% %         for j=find(TF(:,1))'
+% %             [in,out] = intersect(inPoly,[newBoundary(j,1) newBoundary(mod(j+4-1,length(TF(:,1)))+1,2);newBoundary(j,1) newBoundary(mod(j-4-1,length(TF(:,1)))+1,2)]);%inter=fliplr(inter);
+% %             if isempty(in); cvex=[cvex;1];end
+% %             if isempty(out); cvex=[cvex;0];end
+% %         end
+% 
+%         for j=find(TF(:,1))'
+%             [in,out] = intersect(inPoly,[newBoundary(j,1) newBoundary(j,2)+5;newBoundary(j,1) newBoundary(j,2)-5]);%inter=fliplr(inter);
+%             if isempty(in)||sum(~ismember(in(:,2),out(:,2)))==0; cvex=[cvex;1];else; cvex=[cvex;0]; end
+% %             if isempty(out); cvex=[cvex;0];end
+%         end
+%         
+% %         cvex=[cvex;ismember(find(TF(:,1)),bb1)];
+%         % plot(critP(:,1),critP(:,2),'r*');plot(critP(find(cvex),1),critP(find(cvex),2),'k*')
+%         
+% %         plot(critP(:,1),critP(:,2),style)
+% %         plmcdcrtt=text(critP(:,1)+10,critP(:,2)+10,[repmat('C',length(critP),1) int2str([1:length(critP)]')]);
+% 
+%         % Decomposing the cells
+%         ymin = round(min(polyin_work(p).Vertices(:,2)));ymax=round(max(polyin_work(p).Vertices(:,2)));  %%%polyin_buffed
+%         for c = 1:length(critP(:,1))
+%                 bool=false;boo11=false;boo12=false;
+%                 [in,~] = intersect(polyin_work(p),[critP(c,1),ymin;critP(c,1),ymax]);%in=fliplr(in);out=fliplr(out);    %%%polyin_buffed
+%                 if ~isempty(in); if ymax-in(end,2)<50; in(end,2)=ymax;end; end                              % Keep in mind
+%                 if ~isempty(in); if in(1,2)-ymin<50; in(1,2)=ymin;end; end                                  % Keep in mind
+%                 if cvex(c)==0
+% %                     if sum(isnan(out(:,1)))==0 
+%                     if sum(isnan(in(:,1)))==0 
+%                         splitEdge = [splitEdge ; polybuffer([in(1,:);in(end,:)],'lines',t)];%cave(c)=0;
+%                     else
+% %                         oo = rmmissing(out);
+% %                         for k = 1:sum(isnan(out(:,1)))+1
+% %                             if oo(2*k-1,2)<critP(c,2) && oo(2*k,2)>critP(c,2)
+% %                                 bool=true;
+% %                                 break;
+% %                             end
+% %                         end
+% %                         if bool 
+% %                             splitEdge = [splitEdge ; polybuffer([in((find(oo(2*k-1,2)==in(:,2))+1)-2,:);in((find(oo(2*k-1,2)==in(:,2))+1)+2,:)],'lines',t)];
+% %                             %cave(c)=0;
+% %                         end
+% 
+%                         oo = rmmissing(in);
+%                         for k = 1:sum(isnan(in(:,1)))+1
+%                             if oo(2*k-1,2)<critP(c,2) && oo(2*k,2)>critP(c,2)
+%                                 bool=true;%ii=[oo(2*k-1,:);oo(2*k,:)];
+%                                 boo11=true;
+%                                 break;
+%                             end
+%                         end
+%                         if ~bool
+%                            [~,kk]=dsearchn(critP(c,2),oo(:,2));%kk=kk<20;kk=find(kk);
+%                            kkk=sort(kk);kk=ismember(kk,kkk(1:2));kk=find(kk);
+%                            bool=true;
+%                            boo12=true;
+%                         end
+%                         if bool 
+%                             % splitEdge = [splitEdge ; polybuffer([in((find(oo(2*k-1,2)==in(:,2))+1)-2,:);in((find(oo(2*k-1,2)==in(:,2))+1)+2,:)]+[0,-2;0,2],'lines',t)];
+%                             if boo11; splitEdge = [splitEdge ; polybuffer([oo(2*k-1,:);oo(2*k,:)]+[0,-10;0,10],'lines',t)];end
+%                             if boo12; splitEdge = [splitEdge ; polybuffer([oo(kk(1)-1,:);oo(kk(2)+1,:)]+[0,-10;0,10],'lines',t)];end
+%                             % splitEdge = [splitEdge ; polybuffer(ii,'lines',t)];
+%                         end
+%                     end
+%                 end
+%         end
+% 
+%         distt=[];
+%         for ii = 1:size(critP,1)
+%            distt = [distt,spdist(critP(ii,:),critP)];
+%         end
+%         distt(distt==0)=inf;
+%         if min(distt(:))<=25
+%             A=min(distt(:))==distt;A(find(cvex),:)=[];
+%             for ii=1:length(A(:,1))
+%                critP(A(ii,:),:)=[]; 
+%             end
+%         end
+%         critPT=[critPT;critP];
+%     end
+%     
+%     if ~isempty(splitEdge)
+%         for i=1:length(splitEdge)
+%             polyin_work=subtract(polyin_work,splitEdge(i));%splitEdge.plot          % Splits the Poly region into different cells, Decompsition 
+%             polyin=subtract(polyin,splitEdge(i));        
+%         end
+%     end
+%     polyin_work = sortregions(polyin_work,'centroid','ascend');
+%     polyin = sortregions(polyin,'centroid','ascend');
+% 
+%     polyout_work=regions(polyin_work);
+%     polyout=regions(polyin);
+% 
+% end
+
+% function [reebEdge,reebCell,reeb,remreg]=Reeb(polyinreg,critP,splitEdge)                             % Generating Reeb Graph
+%     global a spdist spdist2
+%     TFin = [];reebCon = zeros(length(polyinreg));reebEdge=[];reeb=[];reebCell=[];
+%     if exist('plreeb','var')
+%         delete(plreeb);delete(reebt)
+%     end
+%     for i = 1:length(polyinreg)
+%         buf=5; tt=polyinreg(i);
+%         if ~isempty(splitEdge)
+%             for j=1:length(splitEdge)
+%                 tt=addboundary(tt,splitEdge(j).Vertices);
+%             end
+%             tt=regCombine(tt);
+%             tt=regions(tt);tt=tt(tt.area==max(tt.area));
+%         end
+%         temp = isinterior(tt,fliplr(critP));                % 60 Important
+%         while sum(temp)<2
+%             temp = isinterior(polybuffer(tt,buf),fliplr(critP));
+%             buf=buf+5;
+%             if buf==50
+%                 break
+%             end
+%         end
+%         if sum(temp)==0; remreg=i;continue;else;remreg=[];end
+%         
+%         if sum(temp)>2
+%             t=find(temp);%t=squareform(pdist(critP(temp,:)));t(~t)=inf;
+%             if any(ismember(t,unique(reebEdge)))
+%                 j=t(ismember(t,unique(reebEdge)));j=j(1);
+%                 t(t==j)=[];
+%                 [~,ddd]=max(spdist(critP(j,:),critP(t,:)));
+%                 temp(t(1:end~=ddd))=0;
+%             else
+%                 j=find(temp);
+%                 combEdge = combnk(j,2);
+%                 t=spdist2(critP(combEdge(:,1),:),critP(combEdge(:,2),:));
+%                 combEdge=combEdge(max(t)==t,:);combEdge=combEdge(1,:)';
+%                 temp(j(~ismember(j,combEdge)))=0;
+%             end
+%         end
+%         
+%         TFin = [TFin , temp];ind = find(temp);[yyy,xxx]=polyinreg(i).centroid;
+%         bb=[critP(ind(1),:);[xxx,yyy];critP(ind(2),:)];
+%         reebCon(ind(1),ind(2))=1;reebEdge=[reebEdge;[ind(1),ind(2)]];
+%         cs = csapi(bb(:,2)',bb(:,1)');reebCell= [reebCell;i];
+%         reeb=[reeb;fnplt(cs,2)];%plreeb=plot(reeb(1,:),reeb(2,:),'LineWidth',2);
+%         %reebt=text(yyy+10,xxx+10,['E' int2str(i)]);
+%     end
+% end
+
+% function PathEdge = Boustrophedon(Path,splitReg,init,wall_fol)
+%     global s reebEdge allNode 
+%     if init~=0;PathEdge=init;else;PathEdge=[];end
+% %     if s>a; sensor=s/sqrt(2);else; sensor=s;end                                          % Square Inscribed in a circle
+%     sensor=s/sqrt(2);%s;
+%     for i = 1:length(Path(:,1))
+%         EE = Path(i,1:2);
+%         if ismember(EE,[reebEdge;reebEdge(:,2),reebEdge(:,1)],'rows')
+% %             j=find(sum(EE==[reebEdge;reebEdge(:,2),reebEdge(:,1)],2)==2);
+%             cell=splitReg(Path(i,3));%%cell=splitReg(mod(j-1,length(splitReg))+1);
+%             [subXY] = BoustrophedonPath(cell,EE,sensor,init,wall_fol(i));
+% %             if wall_fol(i)
+% %                 subXY=[subXY;fliplr(allNode(EE(1),:))];%subXY(1,:)
+% %             end
+%         else 
+%             [subXY] = [fliplr(allNode(EE(1),:));fliplr(allNode(EE(2),:))];
+%         end
+%         if i==1
+%             PathEdge=[PathEdge;subXY];
+%         else
+%             no=round(pdist2(PathEdge(end,:),subXY(1,:))/s);
+%             pt = interparc(no,[PathEdge(end,1),subXY(1,1)],[PathEdge(end,2),subXY(1,2)]);
+%             PathEdge=[PathEdge;pt;subXY];
+%         end
+%             init=subXY(end,:);%;fliplr(allNode(Path(i,1),:))      
+%     end
+% end
+
+% function PathEdge = Boustrophedon(Path,splitReg,see,init,wall_fol)%,allNode
+%     global reebEdge reebCell crackEdge crackRaw s allNode spdist 
+%     o=0;
+%     if init~=0;PathEdge=init;else;PathEdge=[];end;sensor=s/sqrt(2);                                          % Square Inscribed in a circle
+%     for i = 1:length(Path(:,1))%length(Path)-1
+%         EE = Path(i,1:2);%Path(i:i+1);
+%         if ismember(EE,[reebEdge;reebEdge(:,2),reebEdge(:,1)],'rows')
+%             o=o+1;
+% %             j=find(sum(EE==[reebEdge;reebEdge(:,2),reebEdge(:,1)],2)==2);
+%             ind=ismember(reebEdge,EE,'rows');ind=find(ind);
+%             if ~isempty(ind);cell=splitReg(reebCell(ind(1)));reebEdge(ind(1),:)=[0,0];end
+%             ind=ismember(reebEdge,fliplr(EE),'rows');ind=find(ind);
+%             if ~isempty(ind);cell=splitReg(reebCell(ind(1)));reebEdge(ind(1),:)=[0,0];end
+%             %%cell=splitReg(mod(j-1,length(splitReg))+1);
+% %             if ~isempty(ind)
+% %                 if ind(1)==20
+% %                 cell.plot
+% %                 end
+% %             end
+% 
+%             %%% for 'in'
+%             orgcell=cell;
+%             cellt=polybuffer(cell,-sensor);cellt=polyclean(cellt);
+%             if ~isempty(cellt.Vertices); cell=cellt;end
+%             Start = EE(1); End=EE(2);
+%             
+%             if allNode(Start,2)>allNode(End,2) 
+% %             	if max(cell.Vertices(:,1))-s-min(cell.Vertices(:,1))<=2*s           % Boustrophedon gap
+%                 if max(cell.Vertices(:,1))-min(cell.Vertices(:,1))<=2*s    
+%                    j = cell.centroid;
+%                 else
+% %                    j=max(cell.Vertices(:,1))-s:-2*s:min(cell.Vertices(:,1));        % Boustrophedon gap
+%                    j=max(cell.Vertices(:,1)):-2*s:min(cell.Vertices(:,1));
+%                    if isempty(j);j=mean([max(cell.Vertices(:,1)),min(cell.Vertices(:,1))]);end
+%                 end
+%             else
+%                %j=allNode(Start,2)+bp_gap:+2*bp_gap:allNode(End,2); 
+% %                if max(cell.Vertices(:,1))-(min(cell.Vertices(:,1))+s)<=2*s          % Boustrophedon gap
+%                if max(cell.Vertices(:,1))-(min(cell.Vertices(:,1)))<=2*s    
+%                    j = cell.centroid;
+%                else
+% %                    j=min(cell.Vertices(:,1))+s:+2*s:max(cell.Vertices(:,1));        % Boustrophedon gap  
+%                    j=min(cell.Vertices(:,1)):+2*s:max(cell.Vertices(:,1));
+%                    if isempty(j);j=mean([max(cell.Vertices(:,1)),min(cell.Vertices(:,1))]);end
+%                end
+%             end
+%             rowBW=max(cell.Vertices(:,2));
+%             in=zeros(2);
+%             if ~isempty(see)
+%                 if see(o)=='t'
+%                    [in,~] = intersect(cell,[j(1),0;j(1),rowBW]);
+%                    if isempty(in) 
+%                        [in,~] = intersect(cell,[j(1)+1,0;j(1)+1,rowBW]);
+%                        if isempty(in);[in,~] = intersect(cell,[j(1)-1,0;j(1)-1,rowBW]);end
+%                    end
+%                 elseif see(o)=='b'
+%                    [in,~] = intersect(cell,[j(1),rowBW;j(1),0]);
+%                    if isempty(in) 
+%                        [in,~] = intersect(cell,[j(1)+1,0;j(1)+1,rowBW]);
+%                        if isempty(in);[in,~] = intersect(cell,[j(1)-1,0;j(1)-1,rowBW]);end
+%                    end
+%                 end
+%             else
+%                 if length(init)>1
+%                     [in,~] = intersect(cell,[j(1),0;j(1),rowBW]);
+%                     if isempty(in) 
+%                        [in,~] = intersect(cell,[j(1)+1,0;j(1)+1,rowBW]);
+%                        if isempty(in);[in,~] = intersect(cell,[j(1)-1,0;j(1)-1,rowBW]);end
+%                     end
+%                     [~,l]=min(spdist(init,in));
+%                     if l==1
+%                         [in,~] = intersect(cell,[j(1),rowBW;j(1),0]);
+%                         if isempty(in) 
+%                            [in,~] = intersect(cell,[j(1)+1,rowBW;j(1)+1,0]);
+%                            if isempty(in);[in,~] = intersect(cell,[j(1)-1,rowBW;j(1)-1,0]);end
+%                         end
+%                     end
+%                 end
+%             end
+% 
+%             %%%
+%             % cell.plot
+%             [subXY,flag] = BoustrophedonPath(cell,orgcell,EE,sensor,in,init,wall_fol(i));%,allNode
+%             
+%             
+%             %%% New
+%             if ~isempty(subXY) && flag
+%                 % End Node
+%                 aa=false;
+%                 j=subXY(end,1);cell=orgcell;%cell=polybuffer(polyin,sensor,'JointType','miter');%cell=polyin;         %Fixing Vertical 
+%                 k1=[min(cell.Vertices((cell.Vertices(:,1)>fix(j-s) & cell.Vertices(:,1)<fix(j+s)),2))];if k1<10; k1=0;end
+%                 k2=[max(cell.Vertices((cell.Vertices(:,1)>fix(j-s) & cell.Vertices(:,1)<fix(j+s)),2))];
+% %                 [d1,d2]=min(spdist(subXY(end,:),[j,k1;j,k2]));
+%                 if subXY(end,2)<subXY(end-1,2)
+%                     d1=spdist(subXY(end,:),[j,k1]);d2=1;
+%                 elseif subXY(end,2)>subXY(end-1,2)
+%                     d1=spdist(subXY(end,:),[j,k2]);d2=2;
+%                 else d2=0;d1=0;
+%                 end
+% 
+%                 if d2==1 && d1>s
+%                     subXY=[subXY;[j,k1+sensor]];aa=true;           % Wall follow
+%                 elseif d2==2 && d1>s
+%                     subXY=[subXY;[j,k2-sensor]];aa=true;           % Wall follow
+%                 end
+%                 if aa && cell.area>pi*s*s;cell=subtract(cell,polybuffer(subXY(end-1:end,:),'line',s));end
+%                 % Star Node
+%                 j=subXY(1,1);%cell=polybuffer(polyin,sensor,'JointType','miter');%cell=polyin;         %Fixing Vertical 
+%                 k1=min(cell.Vertices((cell.Vertices(:,1)>fix(j-s) & cell.Vertices(:,1)<fix(j+s)),2));
+%                 k2=max(cell.Vertices((cell.Vertices(:,1)>fix(j-s) & cell.Vertices(:,1)<fix(j+s)),2));
+% %                 [d1,d2]=min(spdist(subXY(1,:),[j,k1;j,k2]));
+%                 if subXY(1,2)<subXY(2,2)
+%                     d1=spdist(subXY(1,:),[j,k1]);d2=1;
+%                 elseif subXY(1,2)>subXY(2,2)
+%                     d1=spdist(subXY(1,:),[j,k2]);d2=2;
+%                 else d2=0;d1=0;
+%                 end
+%                 if d2==1 && d1>s
+%                     subXY=[[j,k1+sensor];subXY];%aa=false;           % Wall follow
+%                 elseif d2==2 && d1>s
+%                     subXY=[[j,k2-sensor];subXY];%aa=false;           % Wall follow
+%                 end
+% 
+%                 % End Node
+%                 j=subXY(end,2);                                                                                     %Fixing horizontal
+%                 [~,k1]=min(cell.Vertices(:,1));[~,k2]=max(cell.Vertices(:,1));
+%                 % [d1,d2]=min(spdist(subXY(1,:),[cell.Vertices(k1,:);cell.Vertices(k2,:)]));
+%                 [~,d2]=min(abs([cell.Vertices(k1,1);cell.Vertices(k2,1)]-subXY(1,1)));
+%                 if d2==1
+%                     d1=spdist(subXY(end,:),[cell.Vertices(k2,1),j]);
+%                     if cell.Vertices(k1,2)<s;j=sensor;elseif cell.Vertices(k1,2)>2898-s;j=2898-sensor;else; j=cell.Vertices(k1,2);end % New 
+%                     [mm,~]=dsearchn(subXY,[cell.Vertices(k2,1)-sensor,j]);
+%                     % if d1>s;subXY=[[cell.Vertices(k2,1)-sensor,j];subXY];end
+%                     if d1>s;subXY=[subXY(1:mm,:);[cell.Vertices(k2,1)-sensor,j];subXY(mm+1:end,:)];end
+%                 elseif d2==2 
+%                     d1=spdist(subXY(end,:),[cell.Vertices(k1,1),j]);
+%                     if cell.Vertices(k1,2)<s;j=sensor;elseif cell.Vertices(k1,2)>2898-s;j=2898-sensor;else; j=cell.Vertices(k1,2);end % New
+%                     [mm,~]=dsearchn(subXY,[cell.Vertices(k1,1)+sensor,j]);
+%                     % if d1>s;subXY=[[cell.Vertices(k1,1)+sensor,j];subXY];end
+%                     if d1>s;subXY=[subXY(1:mm,:);[cell.Vertices(k1,1)+sensor,j];subXY(mm+1:end,:)];end
+%                 end
+%                 % Star Node
+%                 j=subXY(1,2);                                                                                     %Fixing horizontal
+%                 [~,k1]=min(cell.Vertices(:,1));[~,k2]=max(cell.Vertices(:,1));
+%                 % [d1,d2]=min(spdist(subXY(1,:),[cell.Vertices(k1,:);cell.Vertices(k2,:)]));
+%                 [~,d2]=min(abs([cell.Vertices(k1,1);cell.Vertices(k2,1)]-subXY(1,1)));
+%                 if d2==1
+%                     d1=spdist(subXY(1,:),[cell.Vertices(k1,1),j]); 
+%                     if cell.Vertices(k1,2)<s;j=sensor;elseif cell.Vertices(k1,2)>2898-s;j=2898-sensor;else; j=cell.Vertices(k1,2);end % New
+%                     [mm,~]=dsearchn(subXY,[cell.Vertices(k1,1)+sensor,j]);
+%                     % if d1>s;subXY=[[cell.Vertices(k1,1)+sensor,j];subXY];end
+%                     if d1>s;subXY=[subXY(1:mm,:);[cell.Vertices(k1,1)+sensor,j];subXY(mm+1:end,:)];end
+%                 elseif d2==2 
+%                     d1=spdist(subXY(1,:),[cell.Vertices(k2,1),j]);
+%                     if cell.Vertices(k1,2)<s;j=sensor;elseif cell.Vertices(k1,2)>2898-s;j=2898-sensor;else; j=cell.Vertices(k1,2);end % New
+%                     [mm,~]=dsearchn(subXY,[cell.Vertices(k2,1)-sensor,j]);
+%                     % if d1>s;subXY=[[cell.Vertices(k2,1)-sensor,j];subXY];end
+%                     if d1>s;subXY=[subXY(1:mm,:);[cell.Vertices(k2,1)-sensor,j];subXY(mm+1:end,:)];end
+%                 end
+% 
+%             end
+%             %%%
+% 
+% %             if wall_fol(i)
+% %                 subXY=[subXY;fliplr(allNode(EE(1),:))];%subXY(1,:)
+% %             end
+% %         elseif ismember(EE,[crackEdge;crackEdge(:,2),crackEdge(:,1)],'rows')
+% %             ind=ismember(crackEdge,EE,'rows');
+% %             if sum(ind)>0; [subXY] = fliplr(crackRaw{ind});end
+% %             ind=ismember(crackEdge,fliplr(EE),'rows');
+% %             if sum(ind)>0; [subXY] = rot90(crackRaw{ind},2);end
+%         else 
+%             [subXY] = [fliplr(allNode(EE(1),:));fliplr(allNode(EE(2),:))];
+%         end
+%         if ~isempty(PathEdge)
+%             [marker_x1,marker_y1] = addPtsLin([PathEdge(end,1),subXY(1,1)],[PathEdge(end,2),subXY(1,2)],s);
+%             PathEdge=[PathEdge;[marker_x1;marker_y1]';subXY];init=subXY(end,:);
+%         else
+%             PathEdge=[PathEdge;subXY];init=subXY(end,:);
+%         end%;fliplr(allNode(Path(i,1),:))
+%     end
+% end
+
+% function [subXY] = BoustrophedonPath(cell,reebEdge,bp_gap,init,wall_fol)
+%     global spdist s allNode
+%     subXY=[];in=zeros(2);rowBW=max(cell.Vertices(:,2));
+%     if wall_fol
+%         subXY = [subXY;wall_follow(cell,bp_gap,init)];%allNode(reebEdge(1),:)
+%         if ~isempty(subXY)
+%             [~,lo]=(min(spdist(subXY(1,:),fliplr(allNode([reebEdge(1),reebEdge(2)],:)))));
+%             if lo==1
+%                 if ~isempty(subXY)
+%                     obj = polybuffer(subXY,'line',bp_gap*sqrt(2));
+%                     cell = subtract(cell,obj);
+%                     cell = polyclean(cell);aa=regions(cell);
+%                     if length(aa)>1;
+%                         cell=aa(aa.area==max(aa.area));
+%                     end
+%                     init=subXY(end,:);
+%                 end
+%                 Start = reebEdge(2); End=reebEdge(1);
+%             else
+%                 subXY=[];
+%                 Start = reebEdge(2); End=reebEdge(1);
+%             end
+%         else
+%             Start = reebEdge(1); End=reebEdge(2);
+%         end
+%     else
+%         Start = reebEdge(1); End=reebEdge(2);
+%     end
+%     if ~cell.area==0
+%         if allNode(Start,2)>allNode(End,2) 
+%            %j=allNode(Start,2)-bp_gap:-2*bp_gap:allNode(End,2); 
+%            j=max(cell.Vertices(:,1))-bp_gap:-2*bp_gap:min(cell.Vertices(:,1));
+%            if isempty(j);j=mean([max(cell.Vertices(:,1)),min(cell.Vertices(:,1))]);
+%            else
+%             if ~(j(end)- min(cell.Vertices(:,1))>=bp_gap) %s Here      
+%                 j(end)=min(cell.Vertices(:,1))+bp_gap;
+%             elseif (j(end)- min(cell.Vertices(:,1))>bp_gap) %s Here
+%                 j = [j,mean([j(end),min(cell.Vertices(:,1))])];%min(cell.Vertices(:,1))+bp_gap
+%             end 
+%            end
+%         else
+%            %j=allNode(Start,2)+bp_gap:+2*bp_gap:allNode(End,2); 
+%            j=min(cell.Vertices(:,1))+bp_gap:+2*bp_gap:max(cell.Vertices(:,1));
+%            if isempty(j);j=mean([max(cell.Vertices(:,1)),min(cell.Vertices(:,1))]);
+%            else
+%             if ~(max(cell.Vertices(:,1)) - j(end)>=bp_gap) %s Here
+%                 j(end)=max(cell.Vertices(:,1))-bp_gap;
+%             elseif (max(cell.Vertices(:,1)) - j(end)>bp_gap) %s Here
+%                 j = [j,mean([j(end),max(cell.Vertices(:,1))])];%max(cell.Vertices(:,1))-bp_gap
+%             end 
+%            end
+%         end
+%         
+%         if length(init)>1
+%             [in,~] = intersect(cell,[j(1),0;j(1),rowBW]);
+%             [~,l]=min(spdist(init,in));
+%             if l==1
+%                 [in,~] = intersect(cell,[j(1),rowBW;j(1),0]);
+%             end
+%         end
+%         
+%         if length(j)==1 
+%             %%%%% If not working properly check the myCrack_knownTarget.m code
+%             [in,~] = intersect(cell,[j,0;j,rowBW]);%in=[in(1,:);in(end,:)];in(:,2)=in(:,2)+[bp_gap -bp_gap]';
+%             in=[in(1,:);in(end,:)];
+%             if abs(diff(in(:,2)))<2*bp_gap %s Here
+%                 [in(1,1),in(1,2)]=cell.centroid;in=in(1,:);
+%             else
+%                 if in(end,2)>in(1,2)
+%                     in(:,2)=in(:,2)+[bp_gap -bp_gap]'; 
+%                 elseif in(end,2)<in(1,2)
+%                     in(:,2)=in(:,2)+[-bp_gap +bp_gap]';
+%                 end
+%             end
+%             
+%             subXY=[subXY;in];
+% %             if pdist2(init,in(1,:))<pdist2(init,in(2,:)) 
+% %                 subXY=[subXY;in];
+% %             elseif pdist2(init,in(2,:))<pdist2(init,in(1,:)) 
+% %                 subXY=[subXY;flipud(in)];
+% %             end
+%             %%%%%
+%         else
+% %             for j=j
+% %                 if in(end,2)>in(1,2)
+% %                    [in,~] = intersect(cell,[j,rowBW;j,0]);in=[in(1,:);in(end,:)];in(:,2)=in(:,2)+[-bp_gap bp_gap]';%in=fliplr(in);%;out=fliplr(out);
+% %                    temp=(in(1,2):-bp_gap:in(end,2))';   % adding interior points in vertical direction 
+% %                 else
+% %                    [in,~] = intersect(cell,[j,0;j,rowBW]);in=[in(1,:);in(end,:)];in(:,2)=in(:,2)+[bp_gap -bp_gap]';%in=fliplr(in);%;out=fliplr(out);
+% %                    temp=(in(1,2):bp_gap:in(end,2))';
+% %                 end
+% %                 subXY=[subXY;[repelem(in(1,1),length(temp),1) temp];in(end,:)];%[subXY;[in(1,:);in(end,:)]];
+% %             end
+%             temp=zeros(2);
+%             for j=j
+%                 if in(end,2)>in(1,2) || size(temp,1)==1
+%                    [in,~] = intersect(cell,[j,rowBW;j,0]);
+%                    if abs(diff(in(:,2)))<2*bp_gap %s Here
+%                         %[in(1,1),in(1,2)]=cell.centroid;in=in(1,:);temp=in(2);
+%                         in(1,:)=(in(1,:)'+ in(2,:)').'/2;in=in(1,:);temp=in(2);   %%cell.centroid
+%                    else
+%                         in=[in(1,:);in(end,:)];in(:,2)=in(:,2)+[-bp_gap bp_gap]';%in=fliplr(in);%;out=fliplr(out);
+%                         temp=(in(1,2):-bp_gap:in(end,2))';   % adding interior points in vertical direction 
+%                         if size(temp,1)==1
+%                             temp=[in(1,2),in(end,2)]';
+%                         end
+%                    end
+%                 else
+%                    [in,~] = intersect(cell,[j,0;j,rowBW]);
+%                    if abs(diff(in(:,2)))<2*s
+%                         %[in(1,1),in(1,2)]=cell.centroid;in=in(1,:);temp=in(2);
+%                         in(1,:)=(in(1,:)'+ in(2,:)').'/2;in=in(1,:);temp=in(2);   %%cell.centroid
+%                    else
+%                         in=[in(1,:);in(end,:)];in(:,2)=in(:,2)+[bp_gap -bp_gap]';%in=fliplr(in);%;out=fliplr(out);
+%                         temp=(in(1,2):bp_gap:in(end,2))';
+%                         if size(temp,1)==1
+%                             temp=[in(1,2),in(end,2)]';
+%                         end
+%                    end
+%                 end
+%                 if size(temp,1)>1
+%                     subXY=[subXY;[repelem(in(1,1),size(temp,1),1) temp];in(end,:)];%[subXY;[in(1,:);in(end,:)]];
+%                 else
+%                     subXY=[subXY;[repelem(in(1,1),size(temp,1),1) temp]];
+%                 end
+%             end
+%            
+%         end
+%     end
+% end
+
+% function [subXY,flag] = BoustrophedonPath(cell,orgcell,reebEdge,bp_gap,in,init,wall_fol)
+%     global spdist s allNode a
+%     subXY=[];rowBW=max(cell.Vertices(:,2));flag=~wall_fol;cell_loj=false;%in=zeros(2);
+%     if wall_fol
+%         subXY = [subXY;wall_follow(cell,orgcell,bp_gap,init)];%allNode(reebEdge(1),:)
+%         if ~isempty(subXY)
+%             [~,lo]=min(abs(subXY(1,1)-fliplr(allNode([reebEdge(1),reebEdge(2)],2))));
+%             if lo==1
+%                 if ~isempty(subXY)
+%                     obj = polybuffer([init;subXY],'line',bp_gap*sqrt(2));     % Keep in mind
+%                     cell = subtract(cell,obj);orgcell = subtract(orgcell,obj);orgcell = polyclean(orgcell);%cell = polyclean(cell);
+%                     if cell.area==0;cell=orgcell;end
+%                     % cell = polyclean(cell);
+%                     aa=regions(cell);
+%                     if length(aa)>1
+%                         cell=aa(aa.area==max(aa.area));
+%                     end
+%                     init=subXY(end,:);
+%                 end
+%                 Start = reebEdge(2); End=reebEdge(1);
+%             else
+%                 subXY=[];flag=wall_fol;
+%                 Start = reebEdge(2); End=reebEdge(1);
+%             end
+%         else
+%             Start = reebEdge(1); End=reebEdge(2);
+%         end
+%     else
+%         Start = reebEdge(1); End=reebEdge(2);
+%     end
+%     if ~cell.area==0 && cell.area > area(polybuffer([0,0],'points',a)) % Cell area to footprint area is new
+%         if allNode(Start,2)>allNode(End,2) 
+%            %j=allNode(Start,2)-bp_gap:-2*bp_gap:allNode(End,2); 
+% %            if max(cell.Vertices(:,1))-bp_gap-min(cell.Vertices(:,1))<=2*bp_gap                  % Boustrophedon gap
+%            if max(cell.Vertices(:,1))-min(cell.Vertices(:,1))<=2*s %bp_gap
+%                if max(orgcell.Vertices(:,1))-(min(orgcell.Vertices(:,1)))<=2*s %bp_gap             % Check if nessesory 
+%                     j = cell.centroid;
+%                else
+%                    j =[min(cell.Vertices(:,1)),max(cell.Vertices(:,1))];
+%                end
+%            else
+% %                j=max(cell.Vertices(:,1))-bp_gap:-2*bp_gap:min(cell.Vertices(:,1));              % Boustrophedon gap
+%                j=max(cell.Vertices(:,1)):-2*bp_gap:min(cell.Vertices(:,1));
+%                if isempty(j);j=mean([max(cell.Vertices(:,1)),min(cell.Vertices(:,1))]);
+%                else
+% %                 if ~(j(end)- min(cell.Vertices(:,1))>=bp_gap)%s*sqrt(2)     Keep in mind          % Boustrophedon gap
+% %                 if ~(j(end)- min(cell.Vertices(:,1))>=bp_gap)
+% %                     j(end)=min(cell.Vertices(:,1))+bp_gap;
+% %                 else
+%                 if (j(end)- min(cell.Vertices(:,1))>0)%bp_gap)%s*sqrt(2)   Keep in mind          % Boustrophedon gap
+%                     j = [j,min(cell.Vertices(:,1))];%mean([j(end),min(cell.Vertices(:,1))])];%min(cell.Vertices(:,1))+bp_gap
+%                 end 
+%                end
+%            end
+%         else
+%            %j=allNode(Start,2)+bp_gap:+2*bp_gap:allNode(End,2); 
+% %            if max(cell.Vertices(:,1))-(min(cell.Vertices(:,1))+bp_gap)<=2*bp_gap                % Boustrophedon gap
+%            if max(cell.Vertices(:,1))-(min(cell.Vertices(:,1)))<=2*s %bp_gap
+%                if max(orgcell.Vertices(:,1))-(min(orgcell.Vertices(:,1)))<=2*s %bp_gap
+%                     j = cell.centroid;
+%                else
+%                    j =[min(cell.Vertices(:,1)),max(cell.Vertices(:,1))];
+%                end
+%            else
+% %                j=min(cell.Vertices(:,1))+bp_gap:+2*bp_gap:max(cell.Vertices(:,1));              % Boustrophedon gap
+%                j=min(cell.Vertices(:,1)):+2*bp_gap:max(cell.Vertices(:,1));
+%                if isempty(j);j=mean([max(cell.Vertices(:,1)),min(cell.Vertices(:,1))]);
+%                else
+% %                 if ~(max(cell.Vertices(:,1)) - j(end)>=bp_gap)% s*sqrt(2)   Keep in mind          % Boustrophedon gap
+% %                     j(end)=max(cell.Vertices(:,1))-bp_gap;
+% %                 else
+%                 if (max(cell.Vertices(:,1)) - j(end)>0)%bp_gap)%s*sqrt(2)  keep in mind          % Boustrophedon gap
+%                     j = [j,max(cell.Vertices(:,1))];%mean([j(end),max(cell.Vertices(:,1))])];%max(cell.Vertices(:,1))-bp_gap
+%                 end 
+%                end
+%            end
+%         end
+%         
+% %         if length(init)>1
+% %             [in,~] = intersect(cell,[j(1),0;j(1),rowBW]);
+% %             [~,l]=min(spdist(init,in));
+% %             if l==1
+% %                 [in,~] = intersect(cell,[j(1),rowBW;j(1),0]);
+% %             end
+% %         end
+%         if isequal(cell.Vertices,orgcell.Vertices); cell_loj=true;end
+%         if length(j)==1
+% %             [in,~] = intersect(cell,[j,0;j,rowBW]);
+%             in=[in(1,:);in(end,:)]; 
+%             if cell_loj&&abs(diff(in(:,2)))>2*bp_gap
+%                 if in(1,2)> in(2,2);in(:,2)=in(:,2)+[-bp_gap +bp_gap]';end
+%                 if in(1,2)< in(2,2);in(:,2)=in(:,2)+[+bp_gap -bp_gap]';end
+%             end
+%             if abs(diff(in(:,2)))<2*bp_gap && ~isequal(cell.Vertices,orgcell.Vertices) %s Here
+%                 [in(1,1),in(1,2)]=cell.centroid;in=in(1,:);
+%                 if in(1,1)<bp_gap; in(1,1)=in(1,1)+bp_gap;end
+%                 if in(1,2)<bp_gap; in(1,2)=in(1,2)+bp_gap;end
+%             else
+%                 if in(end,2)>in(1,2)
+%                     in(:,2)=in(:,2);%+[bp_gap -bp_gap]';    % Boustrophedon Height
+%                 elseif in(end,2)<in(1,2)
+%                     in(:,2)=in(:,2);%+[-bp_gap +bp_gap]';
+%                 end
+%             end
+%      
+%             
+%             if size(in,1)>1
+%                 if pdist2(init,in(1,:))<pdist2(init,in(2,:)) 
+%                     subXY=[subXY;in];
+%                 elseif pdist2(init,in(2,:))<pdist2(init,in(1,:)) 
+%                     subXY=[subXY;flipud(in)];
+%                 end
+%             else
+%                 subXY=[subXY;in];
+%             end
+%         else
+%             temp=zeros(2);cell = refinePoly(cell,round(log2(length(j))));    % Cell refinement number is important 
+%             for j=j
+%                 if in(end,2)>in(1,2) || size(temp,1)==1
+%                    [in,~] = intersect(cell,[j,rowBW;j,0]);
+%                    if isempty(in) 
+%                        [in,~] = intersect(cell,[j+1,rowBW;j+1,0]);
+%                        if isempty(in);[in,~] = intersect(cell,[j-1,rowBW;j-1,0]);end
+%                    end
+%                    if abs(diff(in(:,2)))<=10%2*s
+%                        [in,~] = intersect(orgcell,[j,rowBW;j,0]);if ~isempty(in);in(:,2)=in(:,2)+[-bp_gap +bp_gap]';end
+%                        if isempty(in) 
+%                            [in,~] = intersect(orgcell,[j+1,rowBW;j+1,0]);if ~isempty(in);in(:,2)=in(:,2)+[-bp_gap +bp_gap]';end
+%                            if isempty(in);[in,~] = intersect(orgcell,[j-1,rowBW;j-1,0]);if ~isempty(in);in(:,2)=in(:,2)+[-bp_gap +bp_gap]';end;end
+%                        end
+%                    end
+%                    if  ~isempty(in)
+%                        if abs(diff(in(:,2)))<=0%2*s
+%                             %[in(1,1),in(1,2)]=cell.centroid;in=in(1,:);temp=in(2);
+%                             in(1,:)=(in(1,:)'+ in(2,:)').'/2;in=in(1,:);temp=in(2);   %%cell.centroid
+%                        else
+%                             in=[in(1,:);in(end,:)];
+%                             in(1,2)=max(cell.Vertices((cell.Vertices(:,1)>fix(j(1)-s) & cell.Vertices(:,1)<fix(j(1)+s)),2));
+%                             in(2,2)=min(cell.Vertices((cell.Vertices(:,1)>fix(j(1)-s) & cell.Vertices(:,1)<fix(j(1)+s)),2));
+%                             %in(:,2)=in(:,2)+[-bp_gap bp_gap]';%in=fliplr(in);%;out=fliplr(out);                 % Boustrophedon Height
+%                             if cell_loj
+%                                 if abs(diff(in(:,2)))>2*bp_gap
+%                                     in(:,2)=in(:,2)+[-bp_gap +bp_gap]';
+%                                 else 
+%                                     in(1,:)=(in(1,:)'+ in(2,:)').'/2;in=in(1,:);temp=in(2);
+%                                 end
+%                                 if size(in,1)==1
+%                                     if in(2)<bp_gap;in(2)=bp_gap;end
+%                                     if in(2)>2890-bp_gap;in(2)=2898-bp_gap;end
+%                                 end
+%                             end
+%                             temp=(in(1,2):-bp_gap:in(end,2))';   % adding interior points in vertical direction 
+%                             if size(temp,1)==1
+%                                 temp=[in(1,2),in(end,2)]';
+%                             end
+%                        end
+%                    else continue;
+%                    end
+%                 else
+%                    [in,~] = intersect(cell,[j,0;j,rowBW]);
+%                    if isempty(in) 
+%                        [in,~] = intersect(cell,[j+1,0;j+1,rowBW]);
+%                        if isempty(in);[in,~] = intersect(cell,[j-1,0;j-1,rowBW]);end
+%                    end
+%                    if abs(diff(in(:,2)))<=10%2*s
+%                        [in,~] = intersect(orgcell,[j,0;j,rowBW]);if ~isempty(in);in(:,2)=in(:,2)+[+bp_gap -bp_gap]';;end
+%                        if isempty(in) 
+%                            [in,~] = intersect(orgcell,[j+1,0;j+1,rowBW]);if ~isempty(in);in(:,2)=in(:,2)+[+bp_gap -bp_gap]';;end
+%                            if isempty(in);[in,~] = intersect(orgcell,[j-1,0;j-1,rowBW]);if ~isempty(in);in(:,2)=in(:,2)+[+bp_gap -bp_gap]';end;end
+%                        end
+%                    end
+%                    if  ~isempty(in)
+%                        if abs(diff(in(:,2)))<=0%2*s
+%                             %[in(1,1),in(1,2)]=cell.centroid;in=in(1,:);temp=in(2);
+%                             in(1,:)=(in(1,:)'+ in(2,:)').'/2;in=in(1,:);temp=in(2);   %%cell.centroid
+%                        else
+%                             in=[in(1,:);in(end,:)];
+%                             in(1,2)=min(cell.Vertices((cell.Vertices(:,1)>fix(j(1)-s) & cell.Vertices(:,1)<fix(j(1)+s)),2));
+%                             in(2,2)=max(cell.Vertices((cell.Vertices(:,1)>fix(j(1)-s) & cell.Vertices(:,1)<fix(j(1)+s)),2));
+%                             %in(:,2)=in(:,2)+[bp_gap -bp_gap]';%in=fliplr(in);%;out=fliplr(out);                 % Boustrophedon Height
+%                             if cell_loj
+%                                 if abs(diff(in(:,2)))>2*bp_gap
+%                                     in(:,2)=in(:,2)+[+bp_gap -bp_gap]';
+%                                 else 
+%                                     in(1,:)=(in(1,:)'+ in(2,:)').'/2;in=in(1,:);temp=in(2);
+%                                 end
+%                                 if size(in,1)==1
+%                                     if in(2)<bp_gap;in(2)=bp_gap;end
+%                                     if in(2)>2890-bp_gap;in(2)=2898-bp_gap;end
+%                                 end
+%                             end
+%                             temp=(in(1,2):bp_gap:in(end,2))';
+%                             if size(temp,1)==1
+%                                 temp=[in(1,2),in(end,2)]';
+%                             end
+%                        end
+%                    else continue;
+%                    end
+%                 end
+%                 if size(temp,1)>1
+%                     subXY=[subXY;[repelem(in(1,1),size(temp,1),1) temp];in(end,:)];%[subXY;[in(1,:);in(end,:)]];
+%                 else
+%                     subXY=[subXY;[repelem(in(1,1),size(temp,1),1) temp]];
+%                 end
+%             end
+% 
+%         end
+%     end
+% end
+
+% function subXY = wall_follow(polyin,orgpolyin,sensor,start)                                 % Wall Follow
+%     global vertical spdist s
+% %     [startid,~,~] = nearestvertex(polyin,start);
+%     if isequal(orgpolyin.Vertices,polyin.Vertices)
+%         working = polybuffer(polyin,-sensor);ss=sensor;
+%         if ~area(working)==0
+%             while 1
+%                 if area(polyclean(working))==0 || size(regions(working),1)>1
+%                     ss=ss-10;
+%                     working = polybuffer(polyin,-ss);
+%                 else
+%                     break
+%                 end
+%             end
+%         end
+%     else
+%         working = polyin;%working = polybuffer(polyin,-sensor);
+%     end
+% %     working=orgpolyin;
+%     subXY=[];%polyin.Vertices(startid,:)
+%     if working.area~=0
+%         [corPtx,idx] = polycorner(working);%plot(working.Vertices(idx,1),working.Vertices(idx,2),'r*')
+%     %     [vertexid,~,~] = nearestvertex(working,start);%fliplr()
+%         [~,vertexid]=min(spdist(start,corPtx));vertexid=idx(vertexid);
+%         % plot(working.Vertices(vertexid,1),working.Vertices(vertexid,2),'y*')
+%         ind = [vertexid,mod(vertexid,length(working.Vertices))+1];
+%         if ~vertical(working.Vertices(ind,:))
+%             subXY=[subXY;working.Vertices(ind(1),:)];
+%             while true
+%                 vid=ind(2);
+%                 subXY = [subXY;working.Vertices(vid,:)];%plot(subXY(end,1),subXY(end,2),'r*')
+%                 ind2 = [ind,mod(ind(2),length(working.Vertices))+1];
+%                 ind = [ind(2),mod(ind(2),length(working.Vertices))+1];
+%     %             v1=working.Vertices(ind2(2),:)-working.Vertices(ind2(1),:);
+%     %             v2=working.Vertices(ind2(2),:)-working.Vertices(ind2(3),:);
+%     %             if vertical(working.Vertices(ind,:)) || ab2v(v1,v2)<80 || ab2v(v1,v2)>280
+%     %             if sum(ind(1)==idx)>0 && (working.Vertices(ind(1),1)-min(working.Vertices(:,1))<s || max(working.Vertices(:,1))-working.Vertices(ind(1),1)<s)
+%                 if sum(ind(1)==idx)>0 && (working.Vertices(ind(1),1)==min(working.Vertices(:,1)) || max(working.Vertices(:,1))==working.Vertices(ind(1),1))
+%                     break
+%                 end
+%             end
+%         else
+%             ind = [vertexid,mod(vertexid-2,length(working.Vertices))+1];
+%             if ~vertical(working.Vertices(ind,:))
+%                 subXY=[subXY;working.Vertices(ind(1),:)];
+%                 while true
+%                     vid=ind(2);
+%                     subXY = [subXY;working.Vertices(vid,:)];
+%                     ind2 = [ind,mod(ind(2)-2,length(working.Vertices))+1];
+%                     ind = [ind(2),mod(ind(2)-2,length(working.Vertices))+1];
+%     %                 v1=working.Vertices(ind2(2),:)-working.Vertices(ind2(1),:);
+%     %                 v2=working.Vertices(ind2(2),:)-working.Vertices(ind2(3),:);
+%     %                 if vertical(working.Vertices(ind,:)) || ab2v(v1,v2)<80 || ab2v(v1,v2)>280
+%     %                 if sum(ind(1)==idx)>0 && (working.Vertices(ind(1),1)-min(working.Vertices(:,1))<s || max(working.Vertices(:,1))-working.Vertices(ind(1),1)<s)
+%                     if sum(ind(1)==idx)>0 && (working.Vertices(ind(1),1)==min(working.Vertices(:,1)) || max(working.Vertices(:,1))==working.Vertices(ind(1),1))
+%                         break
+%                     end
+%                 end
+%             end
+%         end
+%     end
+%     if ~isempty(subXY)
+%         while fix(subXY(end,1))==fix(subXY(end-1,1))
+%             subXY(end,:)=[];
+%         end
+%     end
+%     
+%     %%% New 
+%     aa=true;
+%     if ~isempty(subXY)
+%         % End Node
+%         j=subXY(end,1);cell=orgpolyin;%cell=polybuffer(polyin,sensor,'JointType','miter');%cell=polyin;         %Fixing Vertical 
+%         k1=[min(cell.Vertices((cell.Vertices(:,1)>fix(j-s) & cell.Vertices(:,1)<fix(j+s)),2))];
+%         k2=[max(cell.Vertices((cell.Vertices(:,1)>fix(j-s) & cell.Vertices(:,1)<fix(j+s)),2))];
+% %         [d1,d2]=min(spdist(subXY(end,:),[j,k1;j,k2]));
+%         if subXY(end,2)<subXY(end-1,2)
+%             d1=spdist(subXY(end,:),[j,k1]);d2=1;
+%         elseif subXY(end,2)>subXY(end-1,2)
+%             d1=spdist(subXY(end,:),[j,k2]);d2=2;
+%         else d2=0;d1=0;
+%         end
+%         if d2==1 && d1>s
+%             subXY=[subXY;[j,k1+sensor]];%aa=false;           % Wall follow
+%         elseif d2==2 && d1>s
+%             subXY=[subXY;[j,k2-sensor]];%aa=false;           % Wall follow
+%         end
+%         % Star Node
+% %         j=subXY(1,1);%cell=polybuffer(polyin,sensor,'JointType','miter');%cell=polyin;         %Fixing Vertical 
+% %         k1=min(cell.Vertices((cell.Vertices(:,1)>fix(j-s) & cell.Vertices(:,1)<fix(j+s)),2));
+% %         k2=max(cell.Vertices((cell.Vertices(:,1)>fix(j-s) & cell.Vertices(:,1)<fix(j+s)),2));
+% %         [d1,d2]=min(spdist(subXY(1,:),[j,k1;j,k2]));
+% %         if d2==1 && d1>s
+% %             subXY=[[j,k1+s];subXY];aa=false;           % Wall follow
+% %         elseif d2==2 && d1>s
+% %             subXY=[[j,k2-s];subXY];aa=false;           % Wall follow
+% %         end
+%         
+%         % End Node
+%         j=subXY(end,2);                                                                                     %Fixing horizontal
+%         [~,k1]=min(cell.Vertices(:,1));[~,k2]=max(cell.Vertices(:,1));
+%         % [d1,d2]=min(spdist(subXY(1,:),[cell.Vertices(k1,:);cell.Vertices(k2,:)]));
+%         [~,d2]=min(abs([cell.Vertices(k1,1);cell.Vertices(k2,1)]-subXY(1,1)));
+%         if d2==1
+%             d1=spdist(subXY(end,:),[cell.Vertices(k2,1),j]);
+%             if d1>s;subXY=[subXY;[cell.Vertices(k2,1)-sensor,j]];end
+%         elseif d2==2 
+%             d1=spdist(subXY(end,:),[cell.Vertices(k1,1),j]);
+%             if d1>s;subXY=[subXY;[cell.Vertices(k1,1)+sensor,j]];end
+%         end
+%         
+%     end
+%     %%%
+% 
+% %     subXY(:,2)=subXY(:,2)+s;
+%     
+% end
+
+% function [Path,wall_fol,adj]=ReebPath(adj,critP,reebEdge,cells,Start)
+%     Path=[];wall_fol=[];
+%     A=adj;
+%     ind = Start;
+% 
+%     no=find(adj(ind,:));neighbor=[];
+%     repeat = adj(ind,logical(adj(ind,:)));
+%     for j= 1:length(no)
+%         neighbor = [neighbor;repmat(no(j),repeat(j),1)];
+%     end
+% 
+%     cellOrd=[];treebE=reebEdge;
+%     for j= 1:length(neighbor)
+%         [lia,lib]=ismember([ind,neighbor(j)],treebE,'rows');
+%         if lia
+%             treebE(lib,:)=[0,0];if lib>length(cells);lib=0;end    %
+%             cellOrd = [cellOrd;lib];
+%         end
+%         [lia,lib]=ismember([neighbor(j),ind],treebE,'rows');
+%         if lia
+%             treebE(lib,:)=[0,0];if lib>length(cells);lib=0;end    %
+%             cellOrd = [cellOrd;lib];
+%         end
+%     end
+% 
+% %     no=reebEdge(cellOrd,:);
+% 
+%     neighborCon = sum(adj(neighbor,1:size(adj,2)~=ind),2);leftcell=zeros(length(neighbor(:,1)),1);
+%     leftcell(critP(neighbor,2) < critP(ind,2))=1;
+%     conn = [neighbor,neighborCon,leftcell,cellOrd,cells(cellOrd).area];
+%     adj(ind,:)=0;adj(:,ind)=0;
+% 
+%     % Number of connectivity then left cells
+%     
+%     for i=unique(conn(:,2))'
+%         temp2=conn(conn(:,2)==i,:);
+%         temp2=[sortrows(temp2(logical(temp2(:,3)),:),5,'ascend');sortrows(temp2(logical(~temp2(:,3)),:),5,'ascend')];
+%         if i>0 
+% %             if length(temp2(:,1))>1
+%                 Path=[Path;[repmat(ind,[length(temp2(:,1)),1]) ,temp2(:,[1,4])]];
+%                 wall_fol = [wall_fol;temp2(:,2)==0];
+%                 for j = temp2(1)'                                                       % Loops when two edges with connectivity > 0
+%                     Start = j;                                                          %|
+%                     [tPath,twall_fol,adj]=ReebPath(adj,critP,reebEdge,cells,Start);     %|Not
+%                     Path=[Path;tPath];                                                  %|Tested
+%                     wall_fol = [wall_fol;twall_fol];                                    %|    
+%                 end
+% %             elseif temp2(:,2)==1
+% %                 Start = temp2(:,1);                                                          %|
+% %                 [tPath,twall_fol,adj]=ReebPath(adj,critP,reebEdge,cells,Start);     %|Not
+% %                 Path=[Path;tPath];                                                  %|Tested
+% %                 wall_fol = [wall_fol;twall_fol]; 
+% %             else 
+% %                 Path=[Path;[repmat(ind,[length(temp2(:,1)),1]) ,temp2(:,[1,4])]];
+% %                 wall_fol = [wall_fol;temp2(:,2)==0];
+% %             end
+%         else 
+%             Path=[Path;[repmat(ind,[length(temp2(:,1)),1]) ,temp2(:,[1,4])]];
+%             wall_fol = [wall_fol;temp2(:,2)==0];
+%         end
+%     end
+%     
+% 
+%     if sum(sum(adj(:,Path(end,2))))>0
+%         Start = Path(end,2);
+%         [tPath,twall_fol,adj]=ReebPath(adj,critP,reebEdge,cells,Start);            % Function Loops to find the path 
+%         Path=[Path;tPath];
+%         wall_fol = [wall_fol;twall_fol];
+%     end
+%     
+%     if sum(sum(adj))==0;wall_fol(end)=0;end
+% end
+
+% function [Path,wall_fol,adj]=ReebPath2(adj,critP,reebEdge,cells,Start)
+%     Path=[];wall_fol=[];global spdist
+%     
+%     [tPath,twall_fol,adj]=ReebPath(adj,critP,reebEdge,cells,Start);
+%     Path=[Path;tPath];
+%     wall_fol = [wall_fol;twall_fol];wall_fol(end)=0;
+%     
+%     while sum(ismember(reebEdge,Path(:,1:2),'rows')|ismember(fliplr(reebEdge),Path(:,1:2),'rows'))~=size(reebEdge,1)
+%     
+%         Start = Path(end,2);
+%         t=find(~ismember(1:length(critP),repmat(Path(:,1:2),1,[])));
+%         
+%         [~,ind]=min(spdist(critP(Start,:),critP(t,:)));
+%         Path=[Path;[Start,t(ind),0]];
+%         wall_fol = [wall_fol;0];
+%         Start=t(ind);
+%         
+%         [tPath,twall_fol,adj]=ReebPath(adj,critP,reebEdge,cells,Start);            % Function Loops to find the path 
+%         Path=[Path;tPath];
+%         wall_fol = [wall_fol;twall_fol];wall_fol(end)=0;
+% 
+%     end
+% end
+
+% function [link,detind,crackCom] = crackFollow(line,pointX,pointY,id,currentNode,crack)
+% 
+%     spdist = @(P,Ps) sqrt((P(1,1)-Ps(:,1)).^2 + (P(1,2)-Ps(:,2)).^2);
+%     detind=[id];
+%     templine=line;
+%     for i=id
+%         crackCom=crack{i};
+%         dir=spdist(fliplr(currentNode),[line(i,1:2);line(i,3:4)]);
+%         if dir(2)>dir(1)
+%              link.x=pointX(i,:);
+%              link.y=pointY(i,:);
+%         else
+%             link.x=pointX(i,end:-1:1);
+%             link.y=pointY(i,end:-1:1);
+%         end
+%             
+%          if sum(templine(i,:))==0
+%             continue;
+%          end
+%          templine(i,:)=zeros(1,4);
+%          while(1)
+%             tempdist= spdist([link.x(end),link.y(end)],templine(:,1:2));%line(i,3:4)
+%             inst=find(strlength(string(round(tempdist(:))))<=2);
+%             if ~isempty(inst)
+%                 v1=crackCom(end-4,:)-crackCom(end,:);%vectarrow(crackCom(end,:),crackCom(end-4,:))
+%                 for l=1:length(inst)
+% %                     v1=[link.x(end) link.y(end)]-[link.x(end-1) link.y(end-1)];
+% %                     v2=[pointX(inst(l),2) pointY(inst(l),2)]-[pointX(inst(l),1) pointY(inst(l),1)];
+%                     v2=crack{inst(l)}(4,:)-crack{inst(l)}(1,:);%vectarrow(crack{inst(l)}(1,:),crack{inst(l)}(4,:))
+%                     ang(l)=ab2v(v1,v2);
+%                 end
+%                 ind=inst(max(ang)==ang);clear ang
+%                 mmin=tempdist(ind);
+%                 if mmin<=32
+%                     line(i,3:4)=line(ind,3:4);
+%                     link.x=[link.x,pointX(ind,:)];
+%                     link.y=[link.y,pointY(ind,:)];
+%                     crackCom = [crackCom;crack{ind}];
+%                     line(ind,:)=zeros(1,4);
+%                     templine(ind,:)=zeros(1,4);
+%                     detind=[detind, ind];
+%                 else
+%                     tempdist= spdist([link.x(end),link.y(end)],templine(:,3:4));%line(i,3:4)
+%                     inst=find(strlength(string(round(tempdist(:))))<=2);
+%                     if ~isempty(inst)
+%                         v1=crackCom(end-4,:)-crackCom(end,:);%vectarrow(crackCom(end,:),crackCom(end-4,:))
+%                         for l=1:length(inst)
+% %                             v1=[link.x(end) link.y(end)]-[link.x(end-1) link.y(end-1)];
+% %                             v2=[pointX(inst(l),end-1) pointY(inst(l),end-1)]-[pointX(inst(l),end) pointY(inst(l),end)];
+%                             v2=crack{inst(l)}(end-4,:)-crack{inst(l)}(end,:);%vectarrow(crack{inst(l)}(end,:),crack{inst(l)}(end-4,:))
+%                             ang(l)=ab2v(v1,v2);
+%                         end
+%                         ind=inst(max(ang)==ang);clear ang
+%                         mmin=tempdist(ind);
+%                         if mmin<=32
+%                             line(i,3:4)=line(ind,1:2);
+%                             link.x=[link.x,pointX(ind,end:-1:1)];
+%                             link.y=[link.y,pointY(ind,end:-1:1)];
+%                             crackCom = [crackCom;flipud(crack{ind})];
+%                             line(ind,:)=zeros(1,4);
+%                             templine(ind,:)=zeros(1,4);
+%                             detind=[detind, ind];
+%                         end
+%                     else
+%                         break
+%                     end
+%                 end
+%             else
+%                 tempdist= spdist([link.x(end),link.y(end)],templine(:,3:4));%line(i,3:4)
+%                 inst=find(strlength(string(round(tempdist(:))))<=2);
+%                 if ~isempty(inst)
+%                     v1=crackCom(end-4,:)-crackCom(end,:);%vectarrow(crackCom(end,:),crackCom(end-4,:))
+%                     for l=1:length(inst)
+% %                         v1=[link.x(end) link.y(end)]-[link.x(end-1) link.y(end-1)];
+% %                         v2=[pointX(inst(l),end-1) pointY(inst(l),end-1)]-[pointX(inst(l),end) pointY(inst(l),end)];
+%                         v2=crack{inst(l)}(end-4,:)-crack{inst(l)}(end,:);%vectarrow(crack{inst(l)}(end,:),crack{inst(l)}(end-4,:))
+%                         ang(l)=ab2v(v1,v2);
+%                     end
+%                     ind=inst(max(ang)==ang);clear ang
+%                     mmin=tempdist(ind);
+%                     if mmin<=32
+%                         line(i,3:4)=line(ind,1:2);
+%                         link.x=[link.x,pointX(ind,end:-1:1)];
+%                         link.y=[link.y,pointY(ind,end:-1:1)];
+%                         crackCom = [crackCom;flipud(crack{ind})];
+%                         line(ind,:)=zeros(1,4);
+%                         templine(ind,:)=zeros(1,4);
+%                         detind=[detind, ind];
+%                     end
+%                 else
+%                     break
+%                 end
+%             end
+%          end
+%         dd=spdist(currentNode,fliplr(crackCom([1,end],:)));
+%         if find(min(dd)==dd)==1
+%             link.x=[crackCom(1,1),link.x];%,crackCom(end,1)];
+%             link.y=[crackCom(1,2),link.y];%,crackCom(end,2)];
+%         elseif find(min(dd)==dd)==2
+%             link.x=[crackCom(end,1),link.x];%,crackCom(end,1)];
+%             link.y=[crackCom(end,2),link.y];%,crackCom(end,2)];
+%         end
+%         plot(link.y,link.x,'LineWidth',2)
+%     end
+% end
+%}
+
+function polyout=polyclean(polyin)
+    %global s a
+    polyout=polyshape();
+    if isscalar(polyin)
+        poly = regions(polyin);% pp=polybuffer(poly,-s/4);
+        poly=poly(fix(poly.area*1e-03)>5);%poly.area>100 10
+        % poly=poly(fix(pp.area)>2*a*a*pi);
+        polyout = regJoin(poly);
+    else
+        poly = polyin;% pp=polybuffer(poly,-s/4);
+        poly=poly(fix(poly.area*1e-03)>5);%poly.area>100 10
+        % poly=poly(fix(pp.area)>2*a*a*pi);
+        polyout = poly;
+    end
+end
+
+function polyout = regJoin(polyin)
+    polyout=polyshape();
+    for i=1:length(polyin)
+        polyout=addboundary(polyout,polyin(i).Vertices);
+    end
+end
+
+function polyout = regCombine(polyin)
+    polyout = polybuffer(union(polybuffer(polyin,20)),-20);
+end
+
+function ind = whichReg(polyRegs,line)
+    global s
+    for i = 1:length(polyRegs)
+        [in,~] = intersect(polyRegs(i),line);
+        if isempty(in)
+            ind(i)=0;
+        else
+            ind(i)=1;
+        end
+        ind=logical(ind(:));
+    end
+    
+    %%% Newly added
+    TF = overlaps(polyRegs,polybuffer(line,'line',s));sen=polybuffer([0,0],'point',s);
+    ind = ind | (TF & polyRegs.area<sen.area);
+    %%%
+    
+end
+
+function ang = ab2v(a,b) 
+    theta = rad2deg(atan2(norm(cross([1,0,0],[a,0])), dot([1,0,0],[a,0])));
+    if a(2)<0 theta=360-theta; end
+    
+    aR = a*[1;1i]*exp(-1i*theta*pi/180); aR=[real(aR) imag(aR)];
+    bR = b*[1;1i]*exp(-1i*theta*pi/180); bR=[real(bR) imag(bR)];
+
+    ang=rad2deg(atan2(norm(cross([aR,0],[bR,0])), dot([aR,0],[bR,0])));
+    if bR(2)<0 ang=360-ang; end
+end
+
+function [corPtx,idx] = polycorner(polyin)
+    corPtx=[];idx=[];global vertical
+%     for i = 1: length(polyin.Vertices)
+%         ind = [mod(i-2,length(polyin.Vertices))+1,i,mod(i,length(polyin.Vertices))+1];
+%         %plot(polyin.Vertices(i,1),polyin.Vertices(i,2),'r*')
+%         v1=polyin.Vertices(ind(2),:)-polyin.Vertices(ind(1),:);
+%         v2=polyin.Vertices(ind(2),:)-polyin.Vertices(ind(3),:);%ab2v(v1,v2)
+%         if vertical(polyin.Vertices(ind(2:3),:)) || ab2v(v1,v2)<=95 || ab2v(v1,v2)>=265
+%             corPtx=[corPtx;polyin.Vertices(i,:)];
+%             idx=[idx;i];
+%         end
+%     end
+    i=convhull(polyin.Vertices);
+    corPtx=[corPtx;polyin.Vertices(i,:)];
+	idx=[idx;i];
+end
+
+function a = truRange(BW,a)
+a=a(a>0 & a<BW);
+end
+
+function y = bound(x,bl,bu)
+  % return bounded value clipped between bl and bu
+  y=min(max(x,bl),bu);
+end
+
+function [marker_x,marker_y] = addPtsLin(x,y,marker_dist)
+    % Adding equidistant points along Path
+    dist_from_start = cumsum( [0, sqrt((x(2:end)-x(1:end-1)).^2 + (y(2:end)-y(1:end-1)).^2)] );
+    marker_locs = marker_dist : marker_dist : dist_from_start(end);   %replace with specific distances if desired
+    marker_indices = interp1( dist_from_start, 1 : length(dist_from_start), marker_locs);
+    marker_base_pos = floor(marker_indices);
+    weight_second = marker_indices - marker_base_pos;
+    marker_x = x(marker_base_pos) .* (1-weight_second) + x(marker_base_pos+1) .* weight_second;
+    marker_y = y(marker_base_pos) .* (1-weight_second) + y(marker_base_pos+1) .* weight_second;
+end
+
+function j = sensor_dist(Start,End,cell,orgcell,s)
+    global allNode
+    if allNode(Start,2)>allNode(End,2) 
+%             	if max(cell.Vertices(:,1))-s-min(cell.Vertices(:,1))<=2*s           % Boustrophedon gap
+        if max(cell.Vertices(:,1))-min(cell.Vertices(:,1))<=2*s && isequal(cell,orgcell)   
+           j = cell.centroid;
+        else
+%                    j=max(cell.Vertices(:,1))-s:-2*s:min(cell.Vertices(:,1));        % Boustrophedon gap
+           j=max(cell.Vertices(:,1)):-2*s:min(cell.Vertices(:,1));
+           if length(j)==1; j=[max(cell.Vertices(:,1)),min(cell.Vertices(:,1))];end
+           if isempty(j);j=mean([max(cell.Vertices(:,1)),min(cell.Vertices(:,1))]);end
+        end
+    else
+       %j=allNode(Start,2)+bp_gap:+2*bp_gap:allNode(End,2); 
+%                if max(cell.Vertices(:,1))-(min(cell.Vertices(:,1))+s)<=2*s          % Boustrophedon gap
+       if max(cell.Vertices(:,1))-(min(cell.Vertices(:,1)))<=2*s && isequal(cell,orgcell)   
+           j = cell.centroid;
+       else
+%                    j=min(cell.Vertices(:,1))+s:+2*s:max(cell.Vertices(:,1));        % Boustrophedon gap  
+           j=min(cell.Vertices(:,1)):+2*s:max(cell.Vertices(:,1));
+           if length(j)==1; j=[min(cell.Vertices(:,1)),max(cell.Vertices(:,1))];end
+           if isempty(j);j=mean([max(cell.Vertices(:,1)),min(cell.Vertices(:,1))]);end
+       end
+    end
+end
+
+function in = v_intersect(j,cell)
+    rowBW=max(cell.Vertices(:,2));
+    [in,~] = intersect(cell,[j(1),0;j(1),rowBW]);
+    if isempty(in) 
+       [in,~] = intersect(cell,[j(1)+1,0;j(1)+1,rowBW]);
+       if isempty(in);[in,~] = intersect(cell,[j(1)-1,0;j(1)-1,rowBW]);end
+    end
+end
