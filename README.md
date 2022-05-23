@@ -24,9 +24,7 @@ Motion planning and cracking filling motion control are the two main tasks prese
 | SCC Flow Cahrt| SCC Simulation Result |
 |:----:|:----:|
 | <img width="100%" src="Docs/2.Drawings/SCC_flow.drawio.svg"> | <img width="100%" src="Docs/1.Images/Known.gif"> |
-
 | oSCC Flow Cahrt| SCC Simulation Result |
-|:----:|:----:|
 | <img width="100%" src="Docs/2.Drawings/oSCC_flow.drawio.svg"> | <img width="100%" src="Docs/1.Images/UnKnown.gif"> |
 
 ## Design 
