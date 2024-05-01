@@ -4,8 +4,6 @@
 >
 > Video : We made a Crack Filling Robot！ - Coming Soon [![](Docs/1.Images/WallE1.JPG)](https://www.youtube.com/watch?v=VYJV3xwJ_5Y)
 
-[<img src="https://img.youtube.com/vi/VYJV3xwJ_5Y/maxresdefault.jpg" width="50%">](https://youtu.be/VYJV3xwJ_5Y)
-
 <br/>
 
 ## Abstract
