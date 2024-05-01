@@ -2,7 +2,7 @@
 
 > **Complete and Near-Optimal Coverage Planning and  Control in Robotic Crack Filling**
 >
-> Video : [We made a Crack Filling Robot！ - Coming Soon(https://i.ytimg.com/vi/zThSsiVg9Ss/maxresdefault.jpg)](https://www.youtube.com/watch?v=VYJV3xwJ_5Y)
+> Video : [[We made a Crack Filling Robot！ - Coming Soon](https://i.ytimg.com/vi/zThSsiVg9Ss/maxresdefault.jpg)](https://www.youtube.com/watch?v=VYJV3xwJ_5Y)
 
 > ![](Docs/1.Images/WallE1.JPG)
 
