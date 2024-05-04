@@ -2,6 +2,9 @@
 
 > **Complete and Near-Optimal Coverage Planning and  Control in Robotic Crack Filling**
 >
+> V. Veeraraghavan, K. Hunte, J. Yi and K. Yu, "Complete and Near-Optimal Robotic Crack Coverage and Filling in Civil Infrastructure," in IEEE Transactions on Robotics, doi: 10.1109/TRO.2024.3392077.
+keywords: {Robot sensing systems;Robots;Robot kinematics;Planning;Sensors;Task analysis;Heuristic algorithms;Civil infrastructure;construction robots and automation;coverage planning;motion control},
+>
 > Video : We made a Crack Filling Robot！ - Coming Soon [![](Docs/1.Images/WallEYT.png)](https://www.youtube.com/watch?v=VYJV3xwJ_5Y)
 
 <br/>
